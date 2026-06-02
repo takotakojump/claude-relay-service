@@ -70,7 +70,9 @@ router.delete('/claude-code-headers/:accountId', authenticateAdmin, async (req, 
 // 版本比较函数
 function compareVersions(current, latest) {
   const parseVersion = (v) => {
-    const parts = v.split('.').map(Number)
+    // 剥离 fork 后缀（如 1.1.306-HQ / 1.1.306+build），仅按 主.次.补丁 比较
+    const core = String(v).split(/[-+]/)[0]
+    const parts = core.split('.').map(Number)
     return {
       major: parts[0] || 0,
       minor: parts[1] || 0,
