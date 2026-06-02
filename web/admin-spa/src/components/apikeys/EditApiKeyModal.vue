@@ -838,9 +838,23 @@
                   platform="droid"
                 />
               </div>
+              <div>
+                <label class="mb-1 block text-sm font-medium text-gray-600 dark:text-gray-400"
+                  >CCR 专属账号</label
+                >
+                <AccountSelector
+                  v-model="form.ccrAccountId"
+                  :accounts="localAccounts.ccr"
+                  default-option-text="使用共享账号池"
+                  :disabled="form.permissions.length > 0 && !form.permissions.includes('claude')"
+                  :groups="[]"
+                  placeholder="请选择CCR账号"
+                  platform="ccr"
+                />
+              </div>
             </div>
             <p class="mt-2 text-xs text-gray-500 dark:text-gray-400">
-              修改绑定账号将影响此API Key的请求路由
+              修改绑定账号将影响此API Key的请求路由；同时绑定 Claude 与 CCR 时优先使用 Claude
             </p>
           </div>
 
@@ -1096,6 +1110,7 @@ const localAccounts = ref({
   openai: [],
   bedrock: [],
   droid: [],
+  ccr: [],
   claudeGroups: [],
   geminiGroups: [],
   openaiGroups: [],
@@ -1162,6 +1177,7 @@ const form = reactive({
   openaiAccountId: '',
   bedrockAccountId: '',
   droidAccountId: '',
+  ccrAccountId: '',
   enableModelRestriction: false,
   restrictedModels: [],
   modelInput: '',
@@ -1422,6 +1438,13 @@ const updateApiKey = async () => {
       data.droidAccountId = null
     }
 
+    // CCR账户绑定
+    if (form.ccrAccountId) {
+      data.ccrAccountId = form.ccrAccountId
+    } else {
+      data.ccrAccountId = null
+    }
+
     // 模型限制 - 始终提交这些字段
     data.enableModelRestriction = form.enableModelRestriction
     data.restrictedModels = form.restrictedModels
@@ -1466,6 +1489,7 @@ const refreshAccounts = async () => {
       openaiResponsesData,
       bedrockData,
       droidData,
+      ccrData,
       groupsData
     ] = await Promise.all([
       httpApis.getClaudeAccountsApi(),
@@ -1476,6 +1500,7 @@ const refreshAccounts = async () => {
       httpApis.getOpenAIResponsesAccountsApi(),
       httpApis.getBedrockAccountsApi(),
       httpApis.getDroidAccountsApi(),
+      httpApis.getCcrAccountsApi(),
       httpApis.getAccountGroupsApi()
     ])
 
@@ -1565,6 +1590,14 @@ const refreshAccounts = async () => {
       localAccounts.value.droid = (droidData.data || []).map((account) => ({
         ...account,
         platform: 'droid',
+        isDedicated: account.accountType === 'dedicated'
+      }))
+    }
+
+    if (ccrData.success) {
+      localAccounts.value.ccr = (ccrData.data || []).map((account) => ({
+        ...account,
+        platform: 'ccr',
         isDedicated: account.accountType === 'dedicated'
       }))
     }
@@ -1663,6 +1696,10 @@ onMounted(async () => {
         ...account,
         platform: account.platform || 'droid'
       })),
+      ccr: (props.accounts.ccr || []).map((account) => ({
+        ...account,
+        platform: account.platform || 'ccr'
+      })),
       claudeGroups: props.accounts.claudeGroups || [],
       geminiGroups: props.accounts.geminiGroups || [],
       openaiGroups: props.accounts.openaiGroups || [],
@@ -1739,6 +1776,7 @@ onMounted(async () => {
 
   form.bedrockAccountId = props.apiKey.bedrockAccountId || ''
   form.droidAccountId = props.apiKey.droidAccountId || ''
+  form.ccrAccountId = props.apiKey.ccrAccountId || ''
   form.restrictedModels = props.apiKey.restrictedModels || []
   form.allowedClients = props.apiKey.allowedClients || []
   form.tags = props.apiKey.tags || []

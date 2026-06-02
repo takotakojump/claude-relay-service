@@ -183,6 +183,7 @@ class ApiKeyService {
       azureOpenaiAccountId = null,
       bedrockAccountId = null, // 添加 Bedrock 账号ID支持
       droidAccountId = null,
+      ccrAccountId = null, // 添加 CCR 账号ID支持（绑定后无前缀直连 CCR）
       permissions = [], // 数组格式，空数组表示全部服务，如 ['claude', 'gemini']
       isActive = true,
       concurrencyLimit = 0,
@@ -242,6 +243,7 @@ class ApiKeyService {
       azureOpenaiAccountId: azureOpenaiAccountId || '',
       bedrockAccountId: bedrockAccountId || '', // 添加 Bedrock 账号ID
       droidAccountId: droidAccountId || '',
+      ccrAccountId: ccrAccountId || '', // 添加 CCR 账号ID
       permissions: JSON.stringify(normalizePermissions(permissions)),
       enableModelRestriction: String(enableModelRestriction),
       restrictedModels: JSON.stringify(restrictedModels || []),
@@ -318,6 +320,7 @@ class ApiKeyService {
       azureOpenaiAccountId: keyData.azureOpenaiAccountId,
       bedrockAccountId: keyData.bedrockAccountId, // 添加 Bedrock 账号ID
       droidAccountId: keyData.droidAccountId,
+      ccrAccountId: keyData.ccrAccountId, // 添加 CCR 账号ID
       permissions: normalizePermissions(keyData.permissions),
       enableModelRestriction: keyData.enableModelRestriction === 'true',
       restrictedModels: JSON.parse(keyData.restrictedModels),
@@ -517,6 +520,7 @@ class ApiKeyService {
           azureOpenaiAccountId: keyData.azureOpenaiAccountId,
           bedrockAccountId: keyData.bedrockAccountId, // 添加 Bedrock 账号ID
           droidAccountId: keyData.droidAccountId,
+          ccrAccountId: keyData.ccrAccountId, // 添加 CCR 账号ID
           permissions: normalizePermissions(keyData.permissions),
           tokenLimit: parseInt(keyData.tokenLimit),
           concurrencyLimit: parseInt(keyData.concurrencyLimit || 0),
@@ -663,6 +667,7 @@ class ApiKeyService {
           azureOpenaiAccountId: keyData.azureOpenaiAccountId,
           bedrockAccountId: keyData.bedrockAccountId,
           droidAccountId: keyData.droidAccountId,
+          ccrAccountId: keyData.ccrAccountId, // 添加 CCR 账号ID
           permissions: normalizePermissions(keyData.permissions),
           tokenLimit: parseInt(keyData.tokenLimit),
           concurrencyLimit: parseInt(keyData.concurrencyLimit || 0),
@@ -979,10 +984,6 @@ class ApiKeyService {
         key.openaiResponsesPayloadRules = parseOpenAIResponsesPayloadRules(
           key.openaiResponsesPayloadRules
         )
-        // 不暴露已弃用字段
-        if (Object.prototype.hasOwnProperty.call(key, 'ccrAccountId')) {
-          delete key.ccrAccountId
-        }
 
         let lastUsageRecord = null
         try {
@@ -1252,7 +1253,6 @@ class ApiKeyService {
           key.maskedKey = `${this.prefix}****${key.apiKey.slice(-4)}`
         }
         delete key.apiKey
-        delete key.ccrAccountId
 
         // 不获取 lastUsage（太慢），设为 null
         key.lastUsage = null
@@ -1339,6 +1339,7 @@ class ApiKeyService {
         'azureOpenaiAccountId',
         'bedrockAccountId', // 添加 Bedrock 账号ID
         'droidAccountId',
+        'ccrAccountId', // 添加 CCR 账号ID
         'permissions',
         'expiresAt',
         'activationDays', // 新增：激活后有效天数
@@ -2614,7 +2615,7 @@ class ApiKeyService {
         azure_openai: 'azureOpenaiAccountId',
         bedrock: 'bedrockAccountId',
         droid: 'droidAccountId',
-        ccr: null // CCR 账号没有对应的 API Key 字段
+        ccr: 'ccrAccountId' // CCR 账号绑定字段
       }
 
       const field = fieldMap[accountType]

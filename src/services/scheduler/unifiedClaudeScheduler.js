@@ -373,7 +373,53 @@ class UnifiedClaudeScheduler {
         }
       }
 
-      // CCR 账户不支持绑定（仅通过 ccr, 前缀进行 CCR 路由）
+      // 4. 检查 CCR 账户绑定（绑定后无需 ccr, 前缀，直连 CCR；仿 claude 绑定语义）
+      if (apiKeyData.ccrAccountId) {
+        const boundCcrAccount = await ccrAccountService.getAccount(apiKeyData.ccrAccountId)
+        if (
+          boundCcrAccount &&
+          boundCcrAccount.isActive === true &&
+          boundCcrAccount.status === 'active'
+        ) {
+          const isTempUnavailable = await this.isAccountTemporarilyUnavailable(
+            apiKeyData.ccrAccountId,
+            'ccr'
+          )
+          if (isTempUnavailable) {
+            logger.warn(
+              `⏱️ Bound CCR account ${apiKeyData.ccrAccountId} is temporarily unavailable, falling back to pool`
+            )
+          } else if (await this.isAccountRateLimited(apiKeyData.ccrAccountId, 'ccr')) {
+            // 限流：不回退，抛错（与 claude 专属账号一致）
+            const error = new Error('Dedicated CCR account is rate limited')
+            error.code = 'CCR_DEDICATED_RATE_LIMITED'
+            error.accountId = apiKeyData.ccrAccountId
+            throw error
+          } else if (!isSchedulable(boundCcrAccount.schedulable)) {
+            logger.warn(
+              `⚠️ Bound CCR account ${apiKeyData.ccrAccountId} is not schedulable (schedulable: ${boundCcrAccount?.schedulable}), falling back to pool`
+            )
+          } else if (
+            !this._isModelSupportedByAccount(boundCcrAccount, 'ccr', effectiveModel, 'bound')
+          ) {
+            logger.warn(
+              `⚠️ Bound CCR account ${apiKeyData.ccrAccountId} does not support model ${effectiveModel}, falling back to pool`
+            )
+          } else {
+            logger.info(
+              `🎯 Using bound dedicated CCR account: ${boundCcrAccount.name} (${apiKeyData.ccrAccountId}) for API key ${apiKeyData.name}`
+            )
+            return {
+              accountId: apiKeyData.ccrAccountId,
+              accountType: 'ccr'
+            }
+          }
+        } else {
+          logger.warn(
+            `⚠️ Bound CCR account ${apiKeyData.ccrAccountId} is not available (isActive: ${boundCcrAccount?.isActive}, status: ${boundCcrAccount?.status}), falling back to pool`
+          )
+        }
+      }
 
       // 如果有会话哈希，检查是否有已映射的账户
       if (sessionHash) {

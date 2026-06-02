@@ -2275,6 +2275,7 @@ const accounts = ref({
   openaiResponses: [], // 添加 OpenAI-Responses 账号列表
   bedrock: [],
   droid: [],
+  ccr: [], // 添加 CCR 账号列表
   claudeGroups: [],
   geminiGroups: [],
   openaiGroups: [],
@@ -2479,6 +2480,7 @@ const loadAccounts = async (forceRefresh = false) => {
       openaiResponsesData,
       bedrockData,
       droidData,
+      ccrData,
       groupsData
     ] = await Promise.all([
       httpApis.getClaudeAccountsApi(),
@@ -2489,6 +2491,7 @@ const loadAccounts = async (forceRefresh = false) => {
       httpApis.getOpenAIResponsesAccountsApi(),
       httpApis.getBedrockAccountsApi(),
       httpApis.getDroidAccountsApi(),
+      httpApis.getCcrAccountsApi(),
       httpApis.getAccountGroupsApi()
     ])
 
@@ -2570,6 +2573,14 @@ const loadAccounts = async (forceRefresh = false) => {
       accounts.value.droid = (droidData.data || []).map((account) => ({
         ...account,
         platform: 'droid',
+        isDedicated: account.accountType === 'dedicated'
+      }))
+    }
+
+    if (ccrData.success) {
+      accounts.value.ccr = (ccrData.data || []).map((account) => ({
+        ...account,
+        platform: 'ccr',
         isDedicated: account.accountType === 'dedicated'
       }))
     }

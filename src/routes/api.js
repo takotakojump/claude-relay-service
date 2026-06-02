@@ -361,7 +361,10 @@ async function handleMessagesRequest(req, res) {
             }
           })
         }
-        if (error.code === 'CLAUDE_DEDICATED_RATE_LIMITED') {
+        if (
+          error.code === 'CLAUDE_DEDICATED_RATE_LIMITED' ||
+          error.code === 'CCR_DEDICATED_RATE_LIMITED'
+        ) {
           const limitMessage = claudeRelayService._buildStandardRateLimitMessage(
             error.rateLimitEndAt
           )
@@ -1071,7 +1074,10 @@ async function handleMessagesRequest(req, res) {
             }
           })
         }
-        if (error.code === 'CLAUDE_DEDICATED_RATE_LIMITED') {
+        if (
+          error.code === 'CLAUDE_DEDICATED_RATE_LIMITED' ||
+          error.code === 'CCR_DEDICATED_RATE_LIMITED'
+        ) {
           const limitMessage = claudeRelayService._buildStandardRateLimitMessage(
             error.rateLimitEndAt
           )

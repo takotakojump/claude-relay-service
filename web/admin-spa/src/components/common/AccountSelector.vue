@@ -307,7 +307,7 @@ const props = defineProps({
   platform: {
     type: String,
     required: true,
-    validator: (value) => ['claude', 'gemini', 'openai', 'bedrock', 'droid'].includes(value)
+    validator: (value) => ['claude', 'gemini', 'openai', 'bedrock', 'droid', 'ccr'].includes(value)
   },
   accounts: {
     type: Array,
