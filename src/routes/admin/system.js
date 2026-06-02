@@ -101,6 +101,12 @@ router.get('/check-updates', authenticateAdmin, async (req, res) => {
   } catch (err) {
     logger.warn('⚠️ Could not read VERSION file:', err.message)
   }
+  // 自动附加 fork 标识：VERSION 文件保持与上游一致（无后缀），merge upstream 永不冲突、
+  // 版本号自动跟进；仅在显示/比较入口动态加 -HQ 以区分改版（parseVersion 会剥离后缀再比较）
+  const FORK_SUFFIX = 'HQ'
+  if (currentVersion && !currentVersion.includes('-')) {
+    currentVersion = `${currentVersion}-${FORK_SUFFIX}`
+  }
 
   try {
     // 从缓存获取
