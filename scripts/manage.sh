@@ -672,8 +672,8 @@ update_service() {
         rm -f web/admin-spa/dist/favicon.ico 2>/dev/null
     fi
     
-    # 从 web-dist 分支获取构建好的文件
-    if git ls-remote --heads origin web-dist | grep -q web-dist; then
+    # 强制本地构建前端（使用 fork/当前分支源码，不再从作者 web-dist 下载预构建文件）
+    if false; then
         print_info "从 web-dist 分支下载最新前端文件..."
         
         # 创建临时目录用于 clone
