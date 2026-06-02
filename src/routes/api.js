@@ -361,6 +361,12 @@ async function handleMessagesRequest(req, res) {
             }
           })
         }
+        if (error.code === 'CCR_DEDICATED_UNAVAILABLE') {
+          return res.status(503).json({
+            error: 'ccr_account_unavailable',
+            message: '绑定的 CCR 账号当前不可用，且未启用回退共享池'
+          })
+        }
         if (
           error.code === 'CLAUDE_DEDICATED_RATE_LIMITED' ||
           error.code === 'CCR_DEDICATED_RATE_LIMITED'
@@ -1072,6 +1078,12 @@ async function handleMessagesRequest(req, res) {
               type: 'session_binding_error',
               message: errorMessage
             }
+          })
+        }
+        if (error.code === 'CCR_DEDICATED_UNAVAILABLE') {
+          return res.status(503).json({
+            error: 'ccr_account_unavailable',
+            message: '绑定的 CCR 账号当前不可用，且未启用回退共享池'
           })
         }
         if (

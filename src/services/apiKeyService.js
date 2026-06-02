@@ -184,6 +184,7 @@ class ApiKeyService {
       bedrockAccountId = null, // 添加 Bedrock 账号ID支持
       droidAccountId = null,
       ccrAccountId = null, // 添加 CCR 账号ID支持（绑定后无前缀直连 CCR）
+      ccrFallbackToPool = true, // 绑定的 CCR 账号不可用时是否回退共享账号池（默认回退）
       permissions = [], // 数组格式，空数组表示全部服务，如 ['claude', 'gemini']
       isActive = true,
       concurrencyLimit = 0,
@@ -244,6 +245,7 @@ class ApiKeyService {
       bedrockAccountId: bedrockAccountId || '', // 添加 Bedrock 账号ID
       droidAccountId: droidAccountId || '',
       ccrAccountId: ccrAccountId || '', // 添加 CCR 账号ID
+      ccrFallbackToPool: String(ccrFallbackToPool !== false), // CCR 不可用是否回退共享池
       permissions: JSON.stringify(normalizePermissions(permissions)),
       enableModelRestriction: String(enableModelRestriction),
       restrictedModels: JSON.stringify(restrictedModels || []),
@@ -321,6 +323,7 @@ class ApiKeyService {
       bedrockAccountId: keyData.bedrockAccountId, // 添加 Bedrock 账号ID
       droidAccountId: keyData.droidAccountId,
       ccrAccountId: keyData.ccrAccountId, // 添加 CCR 账号ID
+      ccrFallbackToPool: keyData.ccrFallbackToPool !== 'false', // CCR 不可用是否回退共享池（默认是）
       permissions: normalizePermissions(keyData.permissions),
       enableModelRestriction: keyData.enableModelRestriction === 'true',
       restrictedModels: JSON.parse(keyData.restrictedModels),
@@ -521,6 +524,7 @@ class ApiKeyService {
           bedrockAccountId: keyData.bedrockAccountId, // 添加 Bedrock 账号ID
           droidAccountId: keyData.droidAccountId,
           ccrAccountId: keyData.ccrAccountId, // 添加 CCR 账号ID
+          ccrFallbackToPool: keyData.ccrFallbackToPool !== 'false', // CCR 不可用是否回退共享池（默认是）
           permissions: normalizePermissions(keyData.permissions),
           tokenLimit: parseInt(keyData.tokenLimit),
           concurrencyLimit: parseInt(keyData.concurrencyLimit || 0),
@@ -668,6 +672,7 @@ class ApiKeyService {
           bedrockAccountId: keyData.bedrockAccountId,
           droidAccountId: keyData.droidAccountId,
           ccrAccountId: keyData.ccrAccountId, // 添加 CCR 账号ID
+          ccrFallbackToPool: keyData.ccrFallbackToPool !== 'false', // CCR 不可用是否回退共享池（默认是）
           permissions: normalizePermissions(keyData.permissions),
           tokenLimit: parseInt(keyData.tokenLimit),
           concurrencyLimit: parseInt(keyData.concurrencyLimit || 0),
@@ -1340,6 +1345,7 @@ class ApiKeyService {
         'bedrockAccountId', // 添加 Bedrock 账号ID
         'droidAccountId',
         'ccrAccountId', // 添加 CCR 账号ID
+        'ccrFallbackToPool', // CCR fallback 开关
         'permissions',
         'expiresAt',
         'activationDays', // 新增：激活后有效天数

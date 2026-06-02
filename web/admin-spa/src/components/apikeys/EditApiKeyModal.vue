@@ -851,10 +851,22 @@
                   placeholder="请选择CCR账号"
                   platform="ccr"
                 />
+                <label
+                  class="mt-2 flex items-center gap-2 text-xs text-gray-600 dark:text-gray-400"
+                >
+                  <input
+                    v-model="form.ccrFallbackToPool"
+                    class="h-3.5 w-3.5 rounded border-gray-300 text-blue-600 focus:ring-blue-500 dark:border-gray-600 dark:bg-gray-700"
+                    type="checkbox"
+                  />
+                  <span>CCR 账号不可用时回退共享账号池（关闭则直接报错，不使用其它账号）</span>
+                </label>
               </div>
             </div>
             <p class="mt-2 text-xs text-gray-500 dark:text-gray-400">
-              修改绑定账号将影响此API Key的请求路由；同时绑定 Claude 与 CCR 时优先使用 Claude
+              选择专属账号后此 Key 仅用该账号，不选则用共享池。绑定 CCR 后该 Key 的 Claude
+              请求会直连此 CCR 账号；若同时还绑定了 Claude 专属账号，则 Claude 优先、CCR
+              不生效（通常二选一即可）。
             </p>
           </div>
 
@@ -1178,6 +1190,7 @@ const form = reactive({
   bedrockAccountId: '',
   droidAccountId: '',
   ccrAccountId: '',
+  ccrFallbackToPool: true,
   enableModelRestriction: false,
   restrictedModels: [],
   modelInput: '',
@@ -1444,6 +1457,7 @@ const updateApiKey = async () => {
     } else {
       data.ccrAccountId = null
     }
+    data.ccrFallbackToPool = form.ccrFallbackToPool
 
     // 模型限制 - 始终提交这些字段
     data.enableModelRestriction = form.enableModelRestriction
@@ -1777,6 +1791,8 @@ onMounted(async () => {
   form.bedrockAccountId = props.apiKey.bedrockAccountId || ''
   form.droidAccountId = props.apiKey.droidAccountId || ''
   form.ccrAccountId = props.apiKey.ccrAccountId || ''
+  form.ccrFallbackToPool =
+    props.apiKey.ccrFallbackToPool !== false && props.apiKey.ccrFallbackToPool !== 'false'
   form.restrictedModels = props.apiKey.restrictedModels || []
   form.allowedClients = props.apiKey.allowedClients || []
   form.tags = props.apiKey.tags || []

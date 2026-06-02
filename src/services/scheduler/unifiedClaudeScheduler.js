@@ -375,49 +375,55 @@ class UnifiedClaudeScheduler {
 
       // 4. 检查 CCR 账户绑定（绑定后无需 ccr, 前缀，直连 CCR；仿 claude 绑定语义）
       if (apiKeyData.ccrAccountId) {
+        // fallback 开关：默认回退共享池；关闭则不可用时直接抛错（强隔离）
+        const allowCcrFallback = apiKeyData.ccrFallbackToPool !== false
         const boundCcrAccount = await ccrAccountService.getAccount(apiKeyData.ccrAccountId)
+        let unavailableReason = null
+
         if (
-          boundCcrAccount &&
-          boundCcrAccount.isActive === true &&
-          boundCcrAccount.status === 'active'
+          !boundCcrAccount ||
+          boundCcrAccount.isActive !== true ||
+          boundCcrAccount.status !== 'active'
         ) {
-          const isTempUnavailable = await this.isAccountTemporarilyUnavailable(
-            apiKeyData.ccrAccountId,
-            'ccr'
+          unavailableReason = `not available (isActive: ${boundCcrAccount?.isActive}, status: ${boundCcrAccount?.status})`
+        } else if (await this.isAccountTemporarilyUnavailable(apiKeyData.ccrAccountId, 'ccr')) {
+          unavailableReason = 'temporarily unavailable'
+        } else if (await this.isAccountRateLimited(apiKeyData.ccrAccountId, 'ccr')) {
+          // 限流：始终抛错（与 claude 专属账号一致），不受 fallback 开关影响
+          const error = new Error('Dedicated CCR account is rate limited')
+          error.code = 'CCR_DEDICATED_RATE_LIMITED'
+          error.accountId = apiKeyData.ccrAccountId
+          throw error
+        } else if (!isSchedulable(boundCcrAccount.schedulable)) {
+          unavailableReason = `not schedulable (schedulable: ${boundCcrAccount?.schedulable})`
+        } else if (
+          !this._isModelSupportedByAccount(boundCcrAccount, 'ccr', effectiveModel, 'bound')
+        ) {
+          unavailableReason = `does not support model ${effectiveModel}`
+        } else {
+          logger.info(
+            `🎯 Using bound dedicated CCR account: ${boundCcrAccount.name} (${apiKeyData.ccrAccountId}) for API key ${apiKeyData.name}`
           )
-          if (isTempUnavailable) {
-            logger.warn(
-              `⏱️ Bound CCR account ${apiKeyData.ccrAccountId} is temporarily unavailable, falling back to pool`
-            )
-          } else if (await this.isAccountRateLimited(apiKeyData.ccrAccountId, 'ccr')) {
-            // 限流：不回退，抛错（与 claude 专属账号一致）
-            const error = new Error('Dedicated CCR account is rate limited')
-            error.code = 'CCR_DEDICATED_RATE_LIMITED'
-            error.accountId = apiKeyData.ccrAccountId
-            throw error
-          } else if (!isSchedulable(boundCcrAccount.schedulable)) {
-            logger.warn(
-              `⚠️ Bound CCR account ${apiKeyData.ccrAccountId} is not schedulable (schedulable: ${boundCcrAccount?.schedulable}), falling back to pool`
-            )
-          } else if (
-            !this._isModelSupportedByAccount(boundCcrAccount, 'ccr', effectiveModel, 'bound')
-          ) {
-            logger.warn(
-              `⚠️ Bound CCR account ${apiKeyData.ccrAccountId} does not support model ${effectiveModel}, falling back to pool`
-            )
-          } else {
-            logger.info(
-              `🎯 Using bound dedicated CCR account: ${boundCcrAccount.name} (${apiKeyData.ccrAccountId}) for API key ${apiKeyData.name}`
-            )
-            return {
-              accountId: apiKeyData.ccrAccountId,
-              accountType: 'ccr'
-            }
+          return {
+            accountId: apiKeyData.ccrAccountId,
+            accountType: 'ccr'
           }
+        }
+
+        // 账号不可用（非限流）：按 fallback 开关决定回退共享池还是直接抛错
+        if (allowCcrFallback) {
+          logger.warn(
+            `⚠️ Bound CCR account ${apiKeyData.ccrAccountId} ${unavailableReason}, falling back to pool`
+          )
+          // 不 return，继续往下走共享池
         } else {
           logger.warn(
-            `⚠️ Bound CCR account ${apiKeyData.ccrAccountId} is not available (isActive: ${boundCcrAccount?.isActive}, status: ${boundCcrAccount?.status}), falling back to pool`
+            `❌ Bound CCR account ${apiKeyData.ccrAccountId} ${unavailableReason}, fallback disabled`
           )
+          const error = new Error('Dedicated CCR account unavailable')
+          error.code = 'CCR_DEDICATED_UNAVAILABLE'
+          error.accountId = apiKeyData.ccrAccountId
+          throw error
         }
       }
 
