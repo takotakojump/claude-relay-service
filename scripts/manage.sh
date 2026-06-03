@@ -422,7 +422,7 @@ install_service() {
         rm -rf "$APP_DIR"
     fi
     
-    if ! git clone https://github.com/Wei-Shaw/claude-relay-service.git "$APP_DIR"; then
+    if ! git clone https://github.com/takotakojump/claude-relay-service.git "$APP_DIR"; then
         print_error "克隆项目失败"
         return 1
     fi
@@ -486,14 +486,9 @@ EOF
         # 创建临时目录用于 clone
         TEMP_CLONE_DIR=$(mktemp -d)
         
-        # 使用 sparse-checkout 来只获取需要的文件
-        git clone --depth 1 --branch web-dist --single-branch \
-            https://github.com/Wei-Shaw/claude-relay-service.git \
-            "$TEMP_CLONE_DIR" 2>/dev/null || {
-            # 如果 HTTPS 失败，尝试使用当前仓库的 remote URL
-            REPO_URL=$(git config --get remote.origin.url)
-            git clone --depth 1 --branch web-dist --single-branch "$REPO_URL" "$TEMP_CLONE_DIR"
-        }
+        # 从 fork（origin）的 web-dist 分支下载（含本 fork 的前端改动，不能用作者原版前端）
+        REPO_URL=$(git config --get remote.origin.url)
+        git clone --depth 1 --branch web-dist --single-branch "$REPO_URL" "$TEMP_CLONE_DIR"
         
         # 复制文件到目标目录（排除 .git 和 README.md）
         rsync -av --exclude='.git' --exclude='README.md' "$TEMP_CLONE_DIR/" web/admin-spa/dist/ 2>/dev/null || {
@@ -672,8 +667,8 @@ update_service() {
         rm -f web/admin-spa/dist/favicon.ico 2>/dev/null
     fi
     
-    # 强制本地构建前端（使用 fork/当前分支源码，不再从作者 web-dist 下载预构建文件）
-    if false; then
+    # 优先从 fork（origin）的 web-dist 分支下载预构建前端；无该分支时回退本地构建
+    if git ls-remote --heads origin web-dist | grep -q web-dist; then
         print_info "从 web-dist 分支下载最新前端文件..."
         
         # 创建临时目录用于 clone
@@ -685,25 +680,17 @@ update_service() {
             return 1
         fi
         
-        # 使用 sparse-checkout 来只获取需要的文件，添加重试机制
+        # 从 fork（origin）的 web-dist 下载（含本 fork 前端改动），带重试机制
+        REPO_URL=$(git config --get remote.origin.url)
         local clone_success=false
         for attempt in 1 2 3; do
             print_info "尝试下载前端文件 (第 $attempt 次)..."
-            
-            if git clone --depth 1 --branch web-dist --single-branch \
-                https://github.com/Wei-Shaw/claude-relay-service.git \
-                "$TEMP_CLONE_DIR" 2>/dev/null; then
-                clone_success=true
-                break
-            fi
-            
-            # 如果 HTTPS 失败，尝试使用当前仓库的 remote URL
-            REPO_URL=$(git config --get remote.origin.url)
+
             if git clone --depth 1 --branch web-dist --single-branch "$REPO_URL" "$TEMP_CLONE_DIR" 2>/dev/null; then
                 clone_success=true
                 break
             fi
-            
+
             if [ $attempt -lt 3 ]; then
                 print_warning "下载失败，等待 2 秒后重试..."
                 sleep 2
@@ -1226,9 +1213,10 @@ switch_branch() {
             # 创建临时目录用于 clone
             TEMP_CLONE_DIR=$(mktemp -d)
             
-            # 下载前端文件
+            # 从 fork（origin）下载前端文件（含本 fork 前端改动）
+            REPO_URL=$(git config --get remote.origin.url)
             if git clone --depth 1 --branch "$web_branch" --single-branch \
-                https://github.com/Wei-Shaw/claude-relay-service.git \
+                "$REPO_URL" \
                 "$TEMP_CLONE_DIR" 2>/dev/null; then
                 
                 # 复制文件到目标目录

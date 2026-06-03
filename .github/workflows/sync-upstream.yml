@@ -1,0 +1,103 @@
+name: Sync Upstream
+
+# 定时轮询作者库（upstream: Wei-Shaw/claude-relay-service）的 main 分支：
+# - 有新提交且能干净合并：自动 merge 到 fork main 并 push，再 dispatch build-web-dist 重建前端。
+# - 有新提交但存在冲突：不动 main，改为开一个 sync/upstream -> main 的 PR，由你手动解决合并。
+
+on:
+  schedule:
+    - cron: '37 18 * * *' # 每天 UTC 18:37（约北京时间 02:37）轮询一次
+  workflow_dispatch: # 支持手动触发
+
+permissions:
+  contents: write
+  pull-requests: write
+  actions: write # 自动合并后需 dispatch build-web-dist
+
+env:
+  UPSTREAM_REPO: https://github.com/Wei-Shaw/claude-relay-service.git
+  SYNC_BRANCH: sync/upstream
+
+jobs:
+  sync-upstream:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout fork
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Fetch upstream
+        run: |
+          git remote add upstream "$UPSTREAM_REPO"
+          git fetch upstream main
+          git fetch origin main
+
+      - name: Check for new upstream commits
+        id: check
+        run: |
+          # 若 upstream/main 已是 origin/main 的祖先，说明没有新提交，无需同步
+          if git merge-base --is-ancestor upstream/main origin/main; then
+            echo "Upstream already merged into fork main, nothing to do."
+            echo "has_new=false" >> "$GITHUB_OUTPUT"
+          else
+            COUNT=$(git rev-list --count origin/main..upstream/main)
+            echo "Upstream has $COUNT new commit(s) not in fork main."
+            echo "has_new=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Try auto-merge upstream into main
+        id: merge
+        if: steps.check.outputs.has_new == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout main
+          if git merge --no-edit upstream/main; then
+            echo "Clean merge — pushing to main directly."
+            git push origin main
+            echo "result=merged" >> "$GITHUB_OUTPUT"
+          else
+            echo "Merge has conflicts — aborting and opening a PR for manual resolution."
+            git merge --abort
+            git branch -f "$SYNC_BRANCH" upstream/main
+            git push origin "$SYNC_BRANCH" --force
+            echo "result=conflict" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Trigger frontend rebuild after clean merge
+        if: steps.merge.outputs.result == 'merged'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # 用 GITHUB_TOKEN push 到 main 不会触发其它 workflow，需显式 dispatch 重建前端
+          gh workflow run build-web-dist.yml --ref main
+
+      - name: Open PR for manual conflict resolution
+        if: steps.merge.outputs.result == 'conflict'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # 已存在打开的 PR 则跳过（force-push 已自动更新其内容）
+          EXISTING=$(gh pr list --head "$SYNC_BRANCH" --base main --state open --json number --jq 'length')
+          if [ "$EXISTING" != "0" ]; then
+            echo "An open sync PR already exists, updated by the force-push above."
+            exit 0
+          fi
+          gh pr create \
+            --base main \
+            --head "$SYNC_BRANCH" \
+            --title "chore: sync upstream (conflicts — manual resolution needed)" \
+            --body "$(cat <<'EOF'
+          上游有新提交，但与本 fork 改动存在冲突，自动合并已跳过，请手动解决后合并。
+
+          - 在本 PR 内（或拉到开发机）解决冲突，冲突多出现在 CCR 相关文件
+            （`apiKeyService.js` / `unifiedClaudeScheduler.js` / `api.js` / `admin/system.js`
+            及前端 CCR 组件、`scripts/manage.sh`、`.github/workflows/`）。
+          - 合并到 main 后，若改动了前端请手动 Run 一次 `build-web-dist`（或它会按 push 路径自动触发）。
+          - VERSION 文件随上游跟进，无需手动改（显示时自动加 -HQ）。
+
+          由 `.github/workflows/sync-upstream.yml` 自动创建。
+          EOF
+          )"
