@@ -16,6 +16,12 @@
 #
 set -euo pipefail
 
+# 用 { ... } 包裹整个脚本主体：bash 会先读完整个复合命令再执行。
+# 本脚本会在运行中执行 `git reset --hard`（可能改写自身），若不整体读入内存，
+# bash 按字节偏移续读被改写的文件会读到错位的半截 token，报出诸如
+# “PLIST?: unbound variable” 之类的诡异错误。包裹后即可避免自我改写导致的崩溃。
+{
+
 # 1) 定位项目根目录（本脚本位于 <app>/scripts/ 下）
 APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$APP_DIR"
@@ -24,7 +30,7 @@ echo "📂 项目目录: $APP_DIR"
 # 2) 解析 launchDaemon Label：命令行参数 > 环境变量 CRS_LABEL > 自动探测
 LABEL="${1:-${CRS_LABEL:-}}"
 if [ -z "$LABEL" ]; then
-  LABEL="$(launchctl list 2>/dev/null | grep -iE 'claude|relay' | awk '{print $3}' | head -1 || true)"
+  LABEL="$(launchctl list 2>/dev/null | grep -iE 'claude|relay' | grep -v 'com.apple' | awk '{print $3}' | head -1 || true)"
 fi
 if [ -z "$LABEL" ]; then
   echo "❌ 未找到 launchDaemon Label。请显式指定："
@@ -73,3 +79,6 @@ sleep 2
 echo "📋 当前版本: $(cat VERSION 2>/dev/null || echo unknown)"
 $SUDO launchctl list 2>/dev/null | grep -iE "$LABEL" || echo "（未在 launchctl list 看到 $LABEL，请检查服务日志）"
 echo "✅ 更新完成"
+
+exit 0
+}
