@@ -1475,6 +1475,8 @@ router.post('/api-keys', authenticateAdmin, async (req, res) => {
       openaiAccountId,
       bedrockAccountId,
       droidAccountId,
+      ccrAccountId,
+      ccrFallbackToPool,
       permissions,
       concurrencyLimit,
       rateLimitWindow,
@@ -1680,6 +1682,8 @@ router.post('/api-keys', authenticateAdmin, async (req, res) => {
       openaiAccountId,
       bedrockAccountId,
       droidAccountId,
+      ccrAccountId,
+      ccrFallbackToPool: ccrFallbackToPool !== undefined ? ccrFallbackToPool : true,
       permissions,
       concurrencyLimit,
       rateLimitWindow,
@@ -1738,6 +1742,8 @@ router.post('/api-keys/batch', authenticateAdmin, async (req, res) => {
       openaiAccountId,
       bedrockAccountId,
       droidAccountId,
+      ccrAccountId,
+      ccrFallbackToPool,
       permissions,
       concurrencyLimit,
       rateLimitWindow,
@@ -1803,6 +1809,8 @@ router.post('/api-keys/batch', authenticateAdmin, async (req, res) => {
           openaiAccountId,
           bedrockAccountId,
           droidAccountId,
+          ccrAccountId,
+          ccrFallbackToPool: ccrFallbackToPool !== undefined ? ccrFallbackToPool : true,
           permissions,
           concurrencyLimit,
           rateLimitWindow,
@@ -2005,6 +2013,14 @@ router.put('/api-keys/batch', authenticateAdmin, async (req, res) => {
         if (updates.droidAccountId !== undefined) {
           finalUpdates.droidAccountId = updates.droidAccountId || ''
         }
+        if (updates.ccrAccountId !== undefined) {
+          finalUpdates.ccrAccountId = updates.ccrAccountId || ''
+        }
+        if (updates.ccrFallbackToPool !== undefined) {
+          if (typeof updates.ccrFallbackToPool === 'boolean') {
+            finalUpdates.ccrFallbackToPool = updates.ccrFallbackToPool
+          }
+        }
 
         // 处理标签操作
         if (updates.tags !== undefined) {
@@ -2108,6 +2124,8 @@ router.put('/api-keys/:keyId', authenticateAdmin, async (req, res) => {
       openaiAccountId,
       bedrockAccountId,
       droidAccountId,
+      ccrAccountId,
+      ccrFallbackToPool,
       permissions,
       enableModelRestriction,
       restrictedModels,
@@ -2208,6 +2226,18 @@ router.put('/api-keys/:keyId', authenticateAdmin, async (req, res) => {
     if (droidAccountId !== undefined) {
       // 空字符串表示解绑，null或空字符串都设置为空字符串
       updates.droidAccountId = droidAccountId || ''
+    }
+
+    if (ccrAccountId !== undefined) {
+      // 空字符串表示解绑，null或空字符串都设置为空字符串
+      updates.ccrAccountId = ccrAccountId || ''
+    }
+
+    if (ccrFallbackToPool !== undefined) {
+      if (typeof ccrFallbackToPool !== 'boolean') {
+        return res.status(400).json({ error: 'ccrFallbackToPool must be a boolean' })
+      }
+      updates.ccrFallbackToPool = ccrFallbackToPool
     }
 
     if (permissions !== undefined) {

@@ -5064,15 +5064,18 @@ redisClient.batchDelChunked = async function (keys, chunkSize = 500) {
  */
 redisClient.getAllIdsByIndex = async function (indexKey, scanPattern, extractRegex) {
   const client = this.getClientSafe()
-  // 检查是否已标记为空（避免重复 SCAN）
-  const emptyMarker = await client.get(`${indexKey}:empty`)
-  if (emptyMarker === '1') {
-    return []
-  }
+  // 先检查 Set 中是否有数据（优先使用）
   let ids = await client.smembers(indexKey)
   if (ids && ids.length > 0) {
     return ids
   }
+
+  // Set 为空，检查是否已标记为空（避免重复 SCAN）
+  const emptyMarker = await client.get(`${indexKey}:empty`)
+  if (emptyMarker === '1') {
+    return []
+  }
+
   // 回退到 SCAN（仅首次）
   const keys = await this.scanKeys(scanPattern)
   if (keys.length === 0) {
