@@ -1304,6 +1304,8 @@ const authenticateApiKey = async (req, res, next) => {
       openaiAccountId: validation.keyData.openaiAccountId, // 添加 OpenAI 账号ID
       bedrockAccountId: validation.keyData.bedrockAccountId, // 添加 Bedrock 账号ID
       droidAccountId: validation.keyData.droidAccountId,
+      ccrAccountId: validation.keyData.ccrAccountId, // 添加 CCR 账号ID（绑定后无前缀直连 CCR）
+      ccrFallbackToPool: validation.keyData.ccrFallbackToPool, // CCR 不可用是否回退共享池
       permissions: validation.keyData.permissions,
       concurrencyLimit: validation.keyData.concurrencyLimit,
       rateLimitWindow: validation.keyData.rateLimitWindow,
