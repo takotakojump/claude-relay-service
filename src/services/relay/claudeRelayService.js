@@ -18,6 +18,11 @@ const userMessageQueueService = require('../userMessageQueueService')
 const { isStreamWritable } = require('../../utils/streamHelper')
 const upstreamErrorHelper = require('../../utils/upstreamErrorHelper')
 const metadataUserIdHelper = require('../../utils/metadataUserIdHelper')
+const claudeRelayConfigService = require('../claudeRelayConfigService')
+const {
+  classifyClaude429,
+  computeHeaderlessCooldownSeconds
+} = require('../../utils/claudeRateLimitClassifier')
 const {
   getHttpsAgentForStream,
   getHttpsAgentForNonStream,
@@ -92,6 +97,110 @@ class ClaudeRelayService {
     }
     const formattedReset = formatDateWithTimezone(resetTime)
     return `此专属账号的Opus模型已达到周使用限制，将于 ${formattedReset} 自动恢复，请尝试切换其他模型后再试。`
+  }
+
+  // 🚦 统一处理 Claude 上游 429 的副作用（账号级硬限流 / 短冷却 / Opus 限流）
+  // 三处 429 分支（非流式、流式真正限流、流式 usage capture）共用，保证行为一致。
+  // 仅执行副作用 + 返回专属账号需回写的文案；响应写出由各调用点按自身形态处理。
+  async _applyClaude429SideEffects({
+    classification,
+    accountId,
+    accountType,
+    sessionHash = null,
+    isDedicatedOfficialAccount = false,
+    account = null,
+    isAgentViewAuxiliaryRequest = false,
+    logPrefix = ''
+  }) {
+    const { kind, observed = {}, resetTimestamp = null, retryAfterSeconds = null } = classification
+    let { action } = classification
+    const result = { dedicated: null }
+
+    let cooldownTtl = null
+    let headerlessCount = null
+
+    // headerless 429：读取面板配置，决定走短冷却还是回退旧的账号级硬限流
+    let tiers = { baseSeconds: 300, factor: 3, maxSeconds: 14400 }
+    let windowSeconds = 1800
+    if (action === 'short_cooldown') {
+      try {
+        const cfg = await claudeRelayConfigService.getConfig()
+        if (cfg.headerless429HardLimitEnabled === true) {
+          action = 'hard_rate_limit'
+        }
+        tiers = {
+          baseSeconds: cfg.headerless429CooldownBaseSeconds,
+          factor: cfg.headerless429CooldownFactor,
+          maxSeconds: cfg.headerless429CooldownMaxSeconds
+        }
+        windowSeconds = cfg.headerless429WindowSeconds
+      } catch (cfgError) {
+        logger.warn(
+          `⚠️ ${logPrefix}Failed to load 429 handling config, using defaults: ${cfgError.message}`
+        )
+      }
+    }
+
+    if (action === 'opus_rate_limit') {
+      await claudeAccountService.markAccountOpusRateLimited(accountId, resetTimestamp)
+      await upstreamErrorHelper.resetHeaderless429(accountId, accountType)
+      if (isDedicatedOfficialAccount) {
+        result.dedicated = {
+          code: 'opus_weekly_limit',
+          message: this._buildOpusLimitMessage(resetTimestamp)
+        }
+      }
+    } else if (action === 'hard_rate_limit') {
+      if (!isAgentViewAuxiliaryRequest) {
+        await unifiedClaudeScheduler.markAccountRateLimited(
+          accountId,
+          accountType,
+          sessionHash,
+          resetTimestamp
+        )
+        await upstreamErrorHelper
+          .markTempUnavailable(accountId, accountType, 429, retryAfterSeconds)
+          .catch(() => {})
+        await upstreamErrorHelper.resetHeaderless429(accountId, accountType)
+        if (isDedicatedOfficialAccount) {
+          result.dedicated = {
+            code: 'upstream_rate_limited',
+            message: this._buildStandardRateLimitMessage(resetTimestamp || account?.rateLimitEndAt)
+          }
+        }
+      }
+    } else if (action === 'short_cooldown') {
+      if (!isAgentViewAuxiliaryRequest) {
+        headerlessCount = await upstreamErrorHelper.recordHeaderless429(
+          accountId,
+          accountType,
+          windowSeconds
+        )
+        const maxSeconds =
+          Number.isFinite(tiers.maxSeconds) && tiers.maxSeconds > 0 ? tiers.maxSeconds : 14400
+        const escalated = computeHeaderlessCooldownSeconds(headerlessCount, tiers)
+        cooldownTtl = Math.min(maxSeconds, Math.max(escalated, retryAfterSeconds || 0))
+        await upstreamErrorHelper
+          .markTempUnavailable(accountId, accountType, 429, cooldownTtl)
+          .catch(() => {})
+      }
+      // headerless 不再用 403 文案拦截专属账号：透传上游 429，客户端可自行重试
+    }
+    // action === 'skip'（extra usage / 非 429）：仅记录日志，无副作用
+
+    const logLine =
+      `🚦 ${logPrefix}Claude 429 classified: account=${accountId}, type=${accountType}, ` +
+      `kind=${kind}, action=${action}, hasQuotaHeaders=${classification.hasQuotaHeaders}, ` +
+      `claim=${observed.representativeClaim || 'null'}, resetSource=${observed.resetSource || 'null'}, ` +
+      `resetAt=${resetTimestamp ? new Date(resetTimestamp * 1000).toISOString() : 'null'}, ` +
+      `cooldownTtl=${cooldownTtl ?? 'null'}, headerlessCount=${headerlessCount ?? 'null'}`
+    if (action === 'skip') {
+      logger.info(logLine)
+    } else {
+      logger.warn(logLine)
+    }
+
+    return result
   }
 
   // 🧾 提取错误消息文本
@@ -742,7 +851,6 @@ class ClaudeRelayService {
       // 检查响应是否为限流错误或认证错误
       if (response.statusCode !== 200 && response.statusCode !== 201) {
         let isRateLimited = false
-        let rateLimitResetTimestamp = null
         let dedicatedRateLimitMessage = null
         const organizationDisabledError = this._isOrganizationDisabledError(
           response.statusCode,
@@ -819,48 +927,34 @@ class ClaudeRelayService {
         }
         // 检查是否为429状态码
         else if (response.statusCode === 429) {
-          // 💰 先检查是否为 "Extra usage required" 的非限流 429
-          if (this._isExtraUsageRequired429(response.statusCode, response.body)) {
-            logger.info(
-              `💰 [Non-Stream] "Extra usage required" 429 for account ${accountId}, skipping rate limit marking`
-            )
-          } else {
-            const resetHeader = response.headers
-              ? response.headers['anthropic-ratelimit-unified-reset']
-              : null
-            const parsedResetTimestamp = resetHeader ? parseInt(resetHeader, 10) : NaN
-
-            if (isOpusModelRequest && !Number.isNaN(parsedResetTimestamp)) {
-              await claudeAccountService.markAccountOpusRateLimited(accountId, parsedResetTimestamp)
-              logger.warn(
-                `🚫 Account ${accountId} hit Opus limit, resets at ${new Date(parsedResetTimestamp * 1000).toISOString()}`
-              )
-
-              if (isDedicatedOfficialAccount) {
-                const limitMessage = this._buildOpusLimitMessage(parsedResetTimestamp)
-                return {
-                  statusCode: 403,
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({
-                    error: 'opus_weekly_limit',
-                    message: limitMessage
-                  }),
-                  accountId
-                }
-              }
-            } else {
-              isRateLimited = true
-              if (!Number.isNaN(parsedResetTimestamp)) {
-                rateLimitResetTimestamp = parsedResetTimestamp
-                logger.info(
-                  `🕐 Extracted rate limit reset timestamp: ${rateLimitResetTimestamp} (${new Date(rateLimitResetTimestamp * 1000).toISOString()})`
-                )
-              }
-              if (isDedicatedOfficialAccount) {
-                dedicatedRateLimitMessage = this._buildStandardRateLimitMessage(
-                  rateLimitResetTimestamp || account?.rateLimitEndAt
-                )
-              }
+          // 统一分类器 + helper：headerless 429 走短冷却，带 quota header 的保持原硬限流/Opus 行为
+          const isExtraUsage = this._isExtraUsageRequired429(response.statusCode, response.body)
+          const classification = classifyClaude429({
+            statusCode: response.statusCode,
+            headers: response.headers,
+            isOpusModelRequest,
+            isExtraUsage
+          })
+          const isAgentViewAuxiliaryRequest = this._isAgentViewAuxiliaryRequest(
+            requestBody,
+            clientHeaders
+          )
+          const { dedicated } = await this._applyClaude429SideEffects({
+            classification,
+            accountId,
+            accountType,
+            sessionHash,
+            isDedicatedOfficialAccount,
+            account,
+            isAgentViewAuxiliaryRequest,
+            logPrefix: '[Non-Stream] '
+          })
+          if (dedicated) {
+            return {
+              statusCode: 403,
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ error: dedicated.code, message: dedicated.message }),
+              accountId
             }
           }
         } else {
@@ -899,18 +993,18 @@ class ClaudeRelayService {
           } else {
             if (isDedicatedOfficialAccount && !dedicatedRateLimitMessage) {
               dedicatedRateLimitMessage = this._buildStandardRateLimitMessage(
-                rateLimitResetTimestamp || account?.rateLimitEndAt
+                account?.rateLimitEndAt
               )
             }
             logger.warn(
               `🚫 Rate limit detected for account ${accountId}, status: ${response.statusCode}`
             )
-            // 标记账号为限流状态并删除粘性会话映射，传递准确的重置时间戳
+            // 标记账号为限流状态并删除粘性会话映射（body 文本判定路径无精确重置时间）
             await unifiedClaudeScheduler.markAccountRateLimited(
               accountId,
               accountType,
               sessionHash,
-              rateLimitResetTimestamp
+              null
             )
             await upstreamErrorHelper
               .markTempUnavailable(
@@ -959,6 +1053,8 @@ class ClaudeRelayService {
         // 请求成功，清除401和500错误计数
         await this.clearUnauthorizedErrors(accountId)
         await claudeAccountService.clearInternalErrors(accountId)
+        // 清除 headerless 429 连续计数，避免后续误升级冷却
+        await upstreamErrorHelper.resetHeaderless429(accountId, accountType)
         // 如果请求成功，检查并移除限流状态
         const isRateLimited = await unifiedClaudeScheduler.isAccountRateLimited(
           accountId,
@@ -2196,87 +2292,39 @@ class ClaudeRelayService {
               return
             }
 
-            // 真正的限流处理
-            const resetHeader = res.headers
-              ? res.headers['anthropic-ratelimit-unified-reset']
-              : null
-            const parsedResetTimestamp = resetHeader ? parseInt(resetHeader, 10) : NaN
+            // 统一分类器 + helper（extra usage 已在上方早返回，这里必为真正限流）
+            const classification = classifyClaude429({
+              statusCode: 429,
+              headers: res.headers,
+              isOpusModelRequest,
+              isExtraUsage: false
+            })
+            const isAgentViewAuxiliaryRequest = this._isAgentViewAuxiliaryRequest(
+              body,
+              clientHeaders
+            )
+            const { dedicated } = await this._applyClaude429SideEffects({
+              classification,
+              accountId,
+              accountType,
+              sessionHash,
+              isDedicatedOfficialAccount,
+              account,
+              isAgentViewAuxiliaryRequest,
+              logPrefix: '[Stream] '
+            })
 
-            if (isOpusModelRequest) {
-              if (!Number.isNaN(parsedResetTimestamp)) {
-                await claudeAccountService.markAccountOpusRateLimited(
-                  accountId,
-                  parsedResetTimestamp
-                )
-                logger.warn(
-                  `🚫 [Stream] Account ${accountId} hit Opus limit, resets at ${new Date(parsedResetTimestamp * 1000).toISOString()}`
-                )
+            if (dedicated) {
+              if (!responseStream.headersSent) {
+                responseStream.status(403)
+                responseStream.setHeader('Content-Type', 'application/json')
               }
-
-              if (isDedicatedOfficialAccount) {
-                const limitMessage = this._buildOpusLimitMessage(parsedResetTimestamp)
-                if (!responseStream.headersSent) {
-                  responseStream.status(403)
-                  responseStream.setHeader('Content-Type', 'application/json')
-                }
-                responseStream.write(
-                  JSON.stringify({
-                    error: 'opus_weekly_limit',
-                    message: limitMessage
-                  })
-                )
-                responseStream.end()
-                resolve()
-                return
-              }
-            } else {
-              const rateLimitResetTimestamp = Number.isNaN(parsedResetTimestamp)
-                ? null
-                : parsedResetTimestamp
-              const isAgentViewAuxiliaryRequest = this._isAgentViewAuxiliaryRequest(
-                body,
-                clientHeaders
+              responseStream.write(
+                JSON.stringify({ error: dedicated.code, message: dedicated.message })
               )
-              if (isAgentViewAuxiliaryRequest) {
-                logger.warn(
-                  `🚫 [Stream] Agent View auxiliary request hit 429 for account ${accountId}; skipping account-level rate-limit marking`
-                )
-              } else {
-                await unifiedClaudeScheduler.markAccountRateLimited(
-                  accountId,
-                  accountType,
-                  sessionHash,
-                  rateLimitResetTimestamp
-                )
-                await upstreamErrorHelper
-                  .markTempUnavailable(
-                    accountId,
-                    accountType,
-                    429,
-                    upstreamErrorHelper.parseRetryAfter(res.headers)
-                  )
-                  .catch(() => {})
-                logger.warn(`🚫 [Stream] Rate limit detected for account ${accountId}, status 429`)
-              }
-
-              if (isDedicatedOfficialAccount && !isAgentViewAuxiliaryRequest) {
-                const limitMessage = this._buildStandardRateLimitMessage(
-                  rateLimitResetTimestamp || account?.rateLimitEndAt
-                )
-                if (!responseStream.headersSent) {
-                  responseStream.status(403)
-                  responseStream.setHeader('Content-Type', 'application/json')
-                }
-                responseStream.write(
-                  JSON.stringify({
-                    error: 'upstream_rate_limited',
-                    message: limitMessage
-                  })
-                )
-                responseStream.end()
-                resolve()
-                return
-              }
+              responseStream.end()
+              resolve()
+              return
             }
 
             // 非专属账户的真正限流：透传错误给客户端（body 已读完，无需 fall-through）
@@ -2884,48 +2932,30 @@ class ClaudeRelayService {
             await claudeAccountService.updateSessionWindowStatus(accountId, sessionWindowStatus)
           }
 
-          // 处理限流状态
+          // 处理限流状态（统一分类器 + helper，与非流式/流式早期保持一致）
           if (rateLimitDetected || res.statusCode === 429) {
-            const resetHeader = res.headers
-              ? res.headers['anthropic-ratelimit-unified-reset']
-              : null
-            const parsedResetTimestamp = resetHeader ? parseInt(resetHeader, 10) : NaN
-
-            if (isOpusModelRequest && !Number.isNaN(parsedResetTimestamp)) {
-              await claudeAccountService.markAccountOpusRateLimited(accountId, parsedResetTimestamp)
-              logger.warn(
-                `🚫 [Stream] Account ${accountId} hit Opus limit, resets at ${new Date(parsedResetTimestamp * 1000).toISOString()}`
-              )
-            } else {
-              const rateLimitResetTimestamp = Number.isNaN(parsedResetTimestamp)
-                ? null
-                : parsedResetTimestamp
-
-              if (!Number.isNaN(parsedResetTimestamp)) {
-                logger.info(
-                  `🕐 Extracted rate limit reset timestamp from stream: ${parsedResetTimestamp} (${new Date(parsedResetTimestamp * 1000).toISOString()})`
-                )
-              }
-
-              await unifiedClaudeScheduler.markAccountRateLimited(
-                accountId,
-                accountType,
-                sessionHash,
-                rateLimitResetTimestamp
-              )
-              await upstreamErrorHelper
-                .markTempUnavailable(
-                  accountId,
-                  accountType,
-                  429,
-                  upstreamErrorHelper.parseRetryAfter(res.headers)
-                )
-                .catch(() => {})
-            }
+            const classification = classifyClaude429({
+              statusCode: 429,
+              headers: res.headers,
+              isOpusModelRequest,
+              isExtraUsage: false
+            })
+            await this._applyClaude429SideEffects({
+              classification,
+              accountId,
+              accountType,
+              sessionHash,
+              isDedicatedOfficialAccount,
+              account,
+              isAgentViewAuxiliaryRequest: false,
+              logPrefix: '[Stream:usage] '
+            })
           } else if (res.statusCode === 200) {
             // 请求成功，清除401和500错误计数
             await this.clearUnauthorizedErrors(accountId)
             await claudeAccountService.clearInternalErrors(accountId)
+            // 清除 headerless 429 连续计数
+            await upstreamErrorHelper.resetHeaderless429(accountId, accountType)
             // 如果请求成功，检查并移除限流状态
             const isRateLimited = await unifiedClaudeScheduler.isAccountRateLimited(
               accountId,

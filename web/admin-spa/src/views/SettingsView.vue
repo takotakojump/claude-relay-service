@@ -1255,6 +1255,150 @@
               </div>
             </div>
 
+            <!-- 429 限流处理 -->
+            <div
+              class="mb-6 rounded-lg bg-white/80 p-6 shadow-lg backdrop-blur-sm dark:bg-gray-800/80"
+            >
+              <div class="flex items-center justify-between">
+                <div class="flex items-center">
+                  <div
+                    class="flex h-12 w-12 items-center justify-center rounded-lg bg-gradient-to-r from-amber-500 to-orange-500 text-white shadow-lg"
+                  >
+                    <i class="fas fa-traffic-light text-xl"></i>
+                  </div>
+                  <div class="ml-4">
+                    <h4 class="text-lg font-semibold text-gray-900 dark:text-white">
+                      429 限流处理
+                    </h4>
+                    <p class="text-sm text-gray-500 dark:text-gray-400">
+                      无 quota header 的 429 默认只做短冷却，不再把账号硬锁到本地 5 小时窗口
+                    </p>
+                  </div>
+                </div>
+                <label class="relative inline-flex cursor-pointer items-center">
+                  <input
+                    v-model="claudeConfig.headerless429HardLimitEnabled"
+                    class="peer sr-only"
+                    type="checkbox"
+                    @change="saveClaudeConfig"
+                  />
+                  <div
+                    class="peer h-6 w-11 rounded-full bg-gray-200 after:absolute after:left-[2px] after:top-[2px] after:h-5 after:w-5 after:rounded-full after:border after:border-gray-300 after:bg-white after:transition-all after:content-[''] peer-checked:bg-amber-500 peer-checked:after:translate-x-full peer-checked:after:border-white peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-amber-300 dark:border-gray-600 dark:bg-gray-700 dark:peer-focus:ring-amber-800"
+                  ></div>
+                </label>
+              </div>
+
+              <!-- 回退旧行为时的提示 -->
+              <div
+                v-if="claudeConfig.headerless429HardLimitEnabled"
+                class="mt-4 rounded-lg bg-amber-50 p-4 dark:bg-amber-900/20"
+              >
+                <div class="flex">
+                  <i class="fas fa-exclamation-triangle mt-0.5 text-amber-500"></i>
+                  <div class="ml-3">
+                    <p class="text-sm text-amber-700 dark:text-amber-300">
+                      已回退为旧行为：headerless 429 会把账号硬锁到本地 5
+                      小时会话窗口，仅建议在排查问题时临时开启。
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              <!-- 短冷却阶梯配置（仅在新行为下显示） -->
+              <div v-else class="mt-6 space-y-4">
+                <div>
+                  <label class="block text-sm font-medium text-gray-700 dark:text-gray-300">
+                    <i class="fas fa-hourglass-start mr-2 text-gray-400"></i>
+                    基础冷却时长（秒）
+                  </label>
+                  <input
+                    v-model.number="claudeConfig.headerless429CooldownBaseSeconds"
+                    class="mt-1 block w-full max-w-xs rounded-lg border border-gray-300 bg-white px-3 py-2 shadow-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/20 dark:border-gray-500 dark:bg-gray-700 dark:text-white sm:text-sm"
+                    max="17999"
+                    min="1"
+                    placeholder="300"
+                    type="number"
+                    @change="saveClaudeConfig"
+                  />
+                  <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                    首次 headerless 429 的冷却时长（1-17999 秒，默认 300）
+                  </p>
+                </div>
+
+                <div>
+                  <label class="block text-sm font-medium text-gray-700 dark:text-gray-300">
+                    <i class="fas fa-times mr-2 text-gray-400"></i>
+                    连续放大倍数
+                  </label>
+                  <input
+                    v-model.number="claudeConfig.headerless429CooldownFactor"
+                    class="mt-1 block w-full max-w-xs rounded-lg border border-gray-300 bg-white px-3 py-2 shadow-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/20 dark:border-gray-500 dark:bg-gray-700 dark:text-white sm:text-sm"
+                    max="100"
+                    min="1"
+                    placeholder="3"
+                    step="0.5"
+                    type="number"
+                    @change="saveClaudeConfig"
+                  />
+                  <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                    同一账号窗口内连续 headerless 时，冷却时长按此倍数递增（默认 3）
+                  </p>
+                </div>
+
+                <div>
+                  <label class="block text-sm font-medium text-gray-700 dark:text-gray-300">
+                    <i class="fas fa-arrow-up-9-1 mr-2 text-gray-400"></i>
+                    冷却时长上限（秒）
+                  </label>
+                  <input
+                    v-model.number="claudeConfig.headerless429CooldownMaxSeconds"
+                    class="mt-1 block w-full max-w-xs rounded-lg border border-gray-300 bg-white px-3 py-2 shadow-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/20 dark:border-gray-500 dark:bg-gray-700 dark:text-white sm:text-sm"
+                    max="17999"
+                    min="1"
+                    placeholder="14400"
+                    type="number"
+                    @change="saveClaudeConfig"
+                  />
+                  <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                    冷却时长上限，必须小于 5 小时（默认 14400 = 4 小时）
+                  </p>
+                </div>
+
+                <div>
+                  <label class="block text-sm font-medium text-gray-700 dark:text-gray-300">
+                    <i class="fas fa-stopwatch mr-2 text-gray-400"></i>
+                    连续计数窗口（秒）
+                  </label>
+                  <input
+                    v-model.number="claudeConfig.headerless429WindowSeconds"
+                    class="mt-1 block w-full max-w-xs rounded-lg border border-gray-300 bg-white px-3 py-2 shadow-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/20 dark:border-gray-500 dark:bg-gray-700 dark:text-white sm:text-sm"
+                    max="86400"
+                    min="60"
+                    placeholder="1800"
+                    type="number"
+                    @change="saveClaudeConfig"
+                  />
+                  <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                    连续 headerless 计数的有效窗口，窗口内无新 429 则自动重置（60-86400 秒，默认
+                    1800）
+                  </p>
+                </div>
+              </div>
+
+              <div class="mt-4 rounded-lg bg-amber-50 p-4 dark:bg-amber-900/20">
+                <div class="flex">
+                  <i class="fas fa-info-circle mt-0.5 text-amber-500"></i>
+                  <div class="ml-3">
+                    <p class="text-sm text-amber-700 dark:text-amber-300">
+                      <strong>工作原理：</strong>带 Anthropic quota header（含 reset 时间）的 429
+                      仍按账号级限流到 reset；只有完全没有 quota header 的 429
+                      才走短冷却，并在同一账号连续出现时阶梯升级，上限始终小于 5 小时。
+                    </p>
+                  </div>
+                </div>
+              </div>
+            </div>
+
             <!-- 配置更新信息 -->
             <div
               v-if="claudeConfig.updatedAt"
@@ -2096,6 +2240,11 @@ const claudeConfig = ref({
   requestDetailCaptureEnabled: false,
   requestDetailRetentionHours: 6,
   requestDetailBodyPreviewEnabled: false,
+  headerless429HardLimitEnabled: false,
+  headerless429CooldownBaseSeconds: 300,
+  headerless429CooldownFactor: 3,
+  headerless429CooldownMaxSeconds: 14400,
+  headerless429WindowSeconds: 1800,
   updatedAt: null,
   updatedBy: null
 })
@@ -2498,6 +2647,11 @@ const loadClaudeConfig = async () => {
         requestDetailRetentionHours:
           response.config?.requestDetailRetentionHours ?? REQUEST_DETAIL_RETENTION_DEFAULT_HOURS,
         requestDetailBodyPreviewEnabled: response.config?.requestDetailBodyPreviewEnabled ?? false,
+        headerless429HardLimitEnabled: response.config?.headerless429HardLimitEnabled ?? false,
+        headerless429CooldownBaseSeconds: response.config?.headerless429CooldownBaseSeconds ?? 300,
+        headerless429CooldownFactor: response.config?.headerless429CooldownFactor ?? 3,
+        headerless429CooldownMaxSeconds: response.config?.headerless429CooldownMaxSeconds ?? 14400,
+        headerless429WindowSeconds: response.config?.headerless429WindowSeconds ?? 1800,
         updatedAt: response.config?.updatedAt || null,
         updatedBy: response.config?.updatedBy || null
       }
@@ -2541,7 +2695,12 @@ const saveClaudeConfig = async (options = {}) => {
       concurrentRequestQueueTimeoutMs: claudeConfig.value.concurrentRequestQueueTimeoutMs,
       requestDetailCaptureEnabled: claudeConfig.value.requestDetailCaptureEnabled,
       requestDetailRetentionHours: claudeConfig.value.requestDetailRetentionHours,
-      requestDetailBodyPreviewEnabled
+      requestDetailBodyPreviewEnabled,
+      headerless429HardLimitEnabled: claudeConfig.value.headerless429HardLimitEnabled,
+      headerless429CooldownBaseSeconds: claudeConfig.value.headerless429CooldownBaseSeconds,
+      headerless429CooldownFactor: claudeConfig.value.headerless429CooldownFactor,
+      headerless429CooldownMaxSeconds: claudeConfig.value.headerless429CooldownMaxSeconds,
+      headerless429WindowSeconds: claudeConfig.value.headerless429WindowSeconds
     }
 
     if (options.purgeRequestDetailBodySnapshots === true) {

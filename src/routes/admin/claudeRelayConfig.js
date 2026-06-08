@@ -52,7 +52,12 @@ router.put('/claude-relay-config', authenticateAdmin, async (req, res) => {
       requestDetailCaptureEnabled,
       requestDetailRetentionHours,
       requestDetailBodyPreviewEnabled,
-      purgeRequestDetailBodySnapshots
+      purgeRequestDetailBodySnapshots,
+      headerless429HardLimitEnabled,
+      headerless429CooldownBaseSeconds,
+      headerless429CooldownFactor,
+      headerless429CooldownMaxSeconds,
+      headerless429WindowSeconds
     } = req.body
 
     // 验证输入
@@ -201,6 +206,63 @@ router.put('/claude-relay-config', authenticateAdmin, async (req, res) => {
       return res.status(400).json({ error: 'purgeRequestDetailBodySnapshots must be a boolean' })
     }
 
+    // 验证 429 限流处理配置
+    if (
+      headerless429HardLimitEnabled !== undefined &&
+      typeof headerless429HardLimitEnabled !== 'boolean'
+    ) {
+      return res.status(400).json({ error: 'headerless429HardLimitEnabled must be a boolean' })
+    }
+
+    if (headerless429CooldownBaseSeconds !== undefined) {
+      if (
+        !Number.isInteger(headerless429CooldownBaseSeconds) ||
+        headerless429CooldownBaseSeconds < 1 ||
+        headerless429CooldownBaseSeconds > 17999
+      ) {
+        return res.status(400).json({
+          error: 'headerless429CooldownBaseSeconds must be an integer between 1 and 17999'
+        })
+      }
+    }
+
+    if (headerless429CooldownFactor !== undefined) {
+      if (
+        !Number.isFinite(headerless429CooldownFactor) ||
+        headerless429CooldownFactor < 1 ||
+        headerless429CooldownFactor > 100
+      ) {
+        return res.status(400).json({
+          error: 'headerless429CooldownFactor must be a finite number between 1 and 100'
+        })
+      }
+    }
+
+    if (headerless429CooldownMaxSeconds !== undefined) {
+      // 上限必须小于 5 小时（18000 秒），避免退化成旧的“锁满会话窗口”行为
+      if (
+        !Number.isInteger(headerless429CooldownMaxSeconds) ||
+        headerless429CooldownMaxSeconds < 1 ||
+        headerless429CooldownMaxSeconds >= 18000
+      ) {
+        return res.status(400).json({
+          error: 'headerless429CooldownMaxSeconds must be an integer between 1 and 17999'
+        })
+      }
+    }
+
+    if (headerless429WindowSeconds !== undefined) {
+      if (
+        !Number.isInteger(headerless429WindowSeconds) ||
+        headerless429WindowSeconds < 60 ||
+        headerless429WindowSeconds > 86400
+      ) {
+        return res.status(400).json({
+          error: 'headerless429WindowSeconds must be an integer between 60 and 86400'
+        })
+      }
+    }
+
     const updateData = {}
     if (claudeCodeOnlyEnabled !== undefined) {
       updateData.claudeCodeOnlyEnabled = claudeCodeOnlyEnabled
@@ -243,6 +305,21 @@ router.put('/claude-relay-config', authenticateAdmin, async (req, res) => {
     }
     if (requestDetailBodyPreviewEnabled !== undefined) {
       updateData.requestDetailBodyPreviewEnabled = requestDetailBodyPreviewEnabled
+    }
+    if (headerless429HardLimitEnabled !== undefined) {
+      updateData.headerless429HardLimitEnabled = headerless429HardLimitEnabled
+    }
+    if (headerless429CooldownBaseSeconds !== undefined) {
+      updateData.headerless429CooldownBaseSeconds = headerless429CooldownBaseSeconds
+    }
+    if (headerless429CooldownFactor !== undefined) {
+      updateData.headerless429CooldownFactor = headerless429CooldownFactor
+    }
+    if (headerless429CooldownMaxSeconds !== undefined) {
+      updateData.headerless429CooldownMaxSeconds = headerless429CooldownMaxSeconds
+    }
+    if (headerless429WindowSeconds !== undefined) {
+      updateData.headerless429WindowSeconds = headerless429WindowSeconds
     }
 
     const updatedConfig = await claudeRelayConfigService.updateConfig(

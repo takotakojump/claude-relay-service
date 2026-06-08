@@ -33,6 +33,13 @@ const DEFAULT_CONFIG = {
   // 排队健康检查配置
   concurrentRequestQueueHealthCheckEnabled: true, // 是否启用排队健康检查（默认开启）
   concurrentRequestQueueHealthThreshold: 0.8, // 健康检查阈值（P90 >= 超时 × 阈值时拒绝新请求）
+  // 429 限流处理配置
+  // 无 quota header 的 429（headerless）默认只做短冷却，不再硬锁账号到本地 5 小时会话窗口
+  headerless429HardLimitEnabled: false, // true=回退旧行为（headerless 也硬锁到 5h 窗口）
+  headerless429CooldownBaseSeconds: 300, // headerless 短冷却基础时长（秒）
+  headerless429CooldownFactor: 3, // 连续 headerless 时冷却时长的放大倍数
+  headerless429CooldownMaxSeconds: 14400, // 冷却时长上限（秒，必须 < 5h=18000）
+  headerless429WindowSeconds: 1800, // 连续 headerless 计数窗口（秒）
   updatedAt: null,
   updatedBy: null
 }

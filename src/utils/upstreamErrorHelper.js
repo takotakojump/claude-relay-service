@@ -2,6 +2,7 @@ const logger = require('./logger')
 const { normalizeTempUnavailablePolicyFromAccountData } = require('./tempUnavailablePolicy')
 
 const TEMP_UNAVAILABLE_PREFIX = 'temp_unavailable'
+const HEADERLESS_429_PREFIX = 'headerless_429_count'
 const ERROR_HISTORY_PREFIX = 'error_history'
 const ERROR_HISTORY_MAX = 5000
 const ERROR_HISTORY_TTL = 3 * 24 * 60 * 60 // 3天
@@ -479,6 +480,40 @@ const getAllTempUnavailable = async () => {
   }
 }
 
+// 记录账号连续 headerless 429 次数（窗口内 incr，首次设置 TTL），返回当前计数
+// 用于对无 quota header 的 429 做阶梯升级冷却，避免每次都按固定短冷却反复撞墙
+const recordHeaderless429 = async (accountId, accountType, windowSeconds = 1800) => {
+  try {
+    const redis = getRedis()
+    const client = redis.getClientSafe()
+    const key = `${HEADERLESS_429_PREFIX}:${accountType}:${accountId}`
+    const count = await client.incr(key)
+    if (count === 1) {
+      await client.expire(key, Math.max(1, Math.floor(windowSeconds)))
+    }
+    return count
+  } catch (error) {
+    logger.warn(
+      `⚠️ [UpstreamError] Failed to record headerless 429 for ${accountId} (${accountType}): ${error.message}`
+    )
+    return 1
+  }
+}
+
+// 清除账号 headerless 429 计数（成功响应或命中真实 quota 限流时调用）
+const resetHeaderless429 = async (accountId, accountType) => {
+  try {
+    const redis = getRedis()
+    const client = redis.getClientSafe()
+    const key = `${HEADERLESS_429_PREFIX}:${accountType}:${accountId}`
+    await client.del(key)
+  } catch (error) {
+    logger.warn(
+      `⚠️ [UpstreamError] Failed to reset headerless 429 counter for ${accountId} (${accountType}): ${error.message}`
+    )
+  }
+}
+
 // 清洗上游错误数据，去除内部路由标识（如 [codex/codex]）
 const sanitizeErrorForClient = (errorData) => {
   if (!errorData || typeof errorData !== 'object') {
@@ -504,6 +539,9 @@ module.exports = {
   recordErrorHistory,
   getErrorHistory,
   clearErrorHistory,
+  recordHeaderless429,
+  resetHeaderless429,
   TEMP_UNAVAILABLE_PREFIX,
+  HEADERLESS_429_PREFIX,
   ERROR_HISTORY_PREFIX
 }
