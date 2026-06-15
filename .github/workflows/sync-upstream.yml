@@ -17,13 +17,17 @@ permissions:
 env:
   UPSTREAM_REPO: https://github.com/Wei-Shaw/claude-relay-service.git
   SYNC_BRANCH: sync/upstream
+  # Pin every `gh` call to this fork. The "Fetch upstream" step adds an `upstream`
+  # remote, which otherwise makes gh resolve to the fork-network parent (Wei-Shaw)
+  # and dispatch/PR against the wrong repo (404: build-web-dist.yml not found there).
+  GH_REPO: ${{ github.repository }}
 
 jobs:
   sync-upstream:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout fork
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
