@@ -689,7 +689,7 @@ class ClaudeRelayService {
         return { response, retryCount }
       }
 
-      let requestOptions = options
+      let requestOptions = { ...options, apiKeyData, accountType, sessionHash }
       let { response, retryCount } = await makeRequestWithRetries(requestOptions)
 
       if (
@@ -1217,7 +1217,7 @@ class ClaudeRelayService {
       }
       if (!processedBody.metadata.user_id || typeof processedBody.metadata.user_id !== 'string') {
         const crypto = require('crypto')
-        const deviceId = crypto.createHash('sha256').update('relay-generated-device').digest('hex')
+        const deviceId = this._generateRelayGeneratedDeviceId(account)
         const sessionId = crypto.randomUUID()
         processedBody.metadata.user_id = JSON.stringify({
           device_id: deviceId,
@@ -1269,15 +1269,31 @@ class ClaudeRelayService {
       delete processedBody.top_p
     }
 
-    // 处理统一的客户端标识
-    if (account && account.useUnifiedClientId === 'true' && account.unifiedClientId) {
-      this._replaceClientId(processedBody, account.unifiedClientId)
-    }
+    // metadata.user_id is normalized later by requestIdentityService, where the
+    // device/session/account fields can be rewritten with one consistent strategy.
 
     return processedBody
   }
 
-  // 🔄 替换请求中的客户端标识
+  _generateRelayGeneratedDeviceId(account) {
+    const crypto = require('crypto')
+    const accountSeed =
+      account && typeof account === 'object'
+        ? account.id ||
+          account.accountId ||
+          account.account_id ||
+          account.uuid ||
+          account.accountUuid ||
+          account.name
+        : null
+
+    return crypto
+      .createHash('sha256')
+      .update(`relay-generated-device:${accountSeed || 'global'}`)
+      .digest('hex')
+  }
+
+  // Replace client identifier in metadata.user_id.
   _replaceClientId(body, unifiedClientId) {
     if (!body?.metadata?.user_id || !unifiedClientId) {
       return
@@ -1328,7 +1344,17 @@ class ClaudeRelayService {
     }
   }
 
-  // 🔢 验证并限制max_tokens参数
+  _resolvePricingFilePath() {
+    const fs = require('fs')
+    const candidates = [
+      path.join(process.cwd(), 'data', 'model_pricing.json'),
+      path.join(process.cwd(), 'resources', 'model-pricing', 'model_prices_and_context_window.json')
+    ]
+
+    return candidates.find((candidate) => fs.existsSync(candidate)) || null
+  }
+
+  // Validate and limit max_tokens.
   _validateAndLimitMaxTokens(body) {
     if (!body || !body.max_tokens) {
       return
@@ -1336,8 +1362,8 @@ class ClaudeRelayService {
 
     try {
       // 使用缓存的定价数据
-      const pricingFilePath = path.join(__dirname, '../../data/model_pricing.json')
-      const pricingData = getPricingData(pricingFilePath)
+      const pricingFilePath = this._resolvePricingFilePath()
+      const pricingData = pricingFilePath ? getPricingData(pricingFilePath) : null
 
       if (!pricingData) {
         logger.warn('⚠️ Model pricing file not found, skipping max_tokens validation')
@@ -1550,7 +1576,7 @@ class ClaudeRelayService {
     const { account, accountType, sessionHash, requestOptions = {}, isStream = false } = options
 
     // 获取统一的 User-Agent
-    const unifiedUA = await this.captureAndGetUnifiedUserAgent(clientHeaders, account)
+    const unifiedUA = await this.captureAndGetUnifiedUserAgent(clientHeaders, account, accountId)
 
     // 获取过滤后的客户端 headers
     const filteredHeaders = this._filterClientHeaders(clientHeaders)
@@ -1579,6 +1605,8 @@ class ClaudeRelayService {
       sessionHash,
       clientHeaders,
       requestOptions,
+      apiKeyData: requestOptions.apiKeyData,
+      isRealClaudeCodeRequest: isRealClaudeCode,
       isStream
     })
 
@@ -2035,6 +2063,9 @@ class ClaudeRelayService {
         streamTransformer,
         {
           ...options,
+          apiKeyData,
+          accountType,
+          sessionHash,
           bodyStoreId,
           isRealClaudeCodeRequest
         },
@@ -3201,12 +3232,20 @@ class ClaudeRelayService {
   }
 
   // 🔧 动态捕获并获取统一的 User-Agent
-  async captureAndGetUnifiedUserAgent(clientHeaders, account) {
-    if (account.useUnifiedUserAgent !== 'true') {
+  async captureAndGetUnifiedUserAgent(clientHeaders, account, accountId = null) {
+    if (!account || account.useUnifiedUserAgent !== 'true') {
       return null
     }
 
-    const CACHE_KEY = 'claude_code_user_agent:daily'
+    const cacheScope =
+      accountId ||
+      account.id ||
+      account.accountId ||
+      account.account_id ||
+      account.uuid ||
+      account.accountUuid ||
+      'global'
+    const CACHE_KEY = `claude_code_user_agent:${cacheScope}:daily`
     const TTL = 90000 // 25小时
 
     // ⚠️ 重要：这里通过正则表达式判断是否为 Claude Code 客户端

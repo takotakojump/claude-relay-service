@@ -56,7 +56,15 @@ const config = {
     }
   },
 
-  // ☁️ Bedrock API配置
+  // Request identity rewrite config
+  requestIdentity: {
+    clientIdRewriteMode: process.env.CLIENT_ID_REWRITE_MODE || 'unified_per_account',
+    generateClientIdWhenMissing: process.env.CLIENT_ID_GENERATE_WHEN_MISSING !== 'false',
+    stainlessFingerprintTtlSeconds:
+      parseInt(process.env.STAINLESS_FINGERPRINT_TTL_SECONDS) || 7 * 24 * 60 * 60
+  },
+
+  // Bedrock API config
   bedrock: {
     enabled: process.env.CLAUDE_CODE_USE_BEDROCK === '1',
     defaultRegion: process.env.AWS_REGION || 'us-east-1',

@@ -367,23 +367,49 @@ router.put('/oem-settings', authenticateAdmin, async (req, res) => {
 
 // ==================== Claude Code 版本管理 ====================
 
+async function scanClaudeCodeUserAgentKeys() {
+  const scopedKeys =
+    typeof redis.scanKeys === 'function'
+      ? await redis.scanKeys('claude_code_user_agent:*:daily')
+      : await redis.client.keys('claude_code_user_agent:*:daily')
+
+  return ['claude_code_user_agent:daily', ...scopedKeys]
+}
+
 router.get('/claude-code-version', authenticateAdmin, async (req, res) => {
   try {
-    const CACHE_KEY = 'claude_code_user_agent:daily'
+    const keys = await scanClaudeCodeUserAgentKeys()
+    const profiles = []
 
-    // 获取缓存的统一User-Agent
-    const unifiedUserAgent = await redis.client.get(CACHE_KEY)
-    const ttl = unifiedUserAgent ? await redis.client.ttl(CACHE_KEY) : 0
+    for (const key of keys) {
+      const userAgent = await redis.client.get(key)
+      if (!userAgent) {
+        continue
+      }
+
+      profiles.push({
+        key,
+        scope:
+          key === 'claude_code_user_agent:daily'
+            ? 'legacy'
+            : key.replace(/^claude_code_user_agent:/, '').replace(/:daily$/, ''),
+        userAgent,
+        ttlSeconds: await redis.client.ttl(key)
+      })
+    }
+
+    const primaryProfile = profiles[0] || null
 
     res.json({
       success: true,
-      userAgent: unifiedUserAgent,
-      isActive: !!unifiedUserAgent,
-      ttlSeconds: ttl,
-      lastUpdated: unifiedUserAgent ? new Date().toISOString() : null
+      userAgent: primaryProfile ? primaryProfile.userAgent : null,
+      isActive: profiles.length > 0,
+      ttlSeconds: primaryProfile ? primaryProfile.ttlSeconds : 0,
+      lastUpdated: primaryProfile ? new Date().toISOString() : null,
+      profiles
     })
   } catch (error) {
-    logger.error('❌ Get unified Claude Code User-Agent error:', error)
+    logger.error('Get unified Claude Code User-Agent error:', error)
     res.status(500).json({
       success: false,
       message: 'Failed to get User-Agent information',
@@ -392,19 +418,21 @@ router.get('/claude-code-version', authenticateAdmin, async (req, res) => {
   }
 })
 
-// 🗑️ 清除统一Claude Code User-Agent缓存
+// Clear unified Claude Code User-Agent cache
 router.post('/claude-code-version/clear', authenticateAdmin, async (req, res) => {
   try {
-    const CACHE_KEY = 'claude_code_user_agent:daily'
+    const keys = await scanClaudeCodeUserAgentKeys()
 
-    // 删除缓存的统一User-Agent
-    await redis.client.del(CACHE_KEY)
+    if (keys.length > 0) {
+      await redis.client.del(...keys)
+    }
 
-    logger.info(`🗑️ Admin manually cleared unified Claude Code User-Agent cache`)
+    logger.info('Admin manually cleared unified Claude Code User-Agent cache')
 
     res.json({
       success: true,
-      message: 'Unified User-Agent cache cleared successfully'
+      message: 'Unified User-Agent cache cleared successfully',
+      clearedKeys: keys.length
     })
   } catch (error) {
     logger.error('❌ Clear unified User-Agent cache error:', error)
