@@ -619,21 +619,49 @@ update_service() {
         fi
     fi
     
-    # 获取最新代码（强制使用远程版本）
-    print_info "获取最新代码..."
-    
-    # 先获取远程更新
-    if ! git fetch origin main; then
-        print_error "获取远程代码失败，请检查网络连接"
+    # Update from the current branch remote instead of always using origin/main.
+    local current_branch
+    current_branch=$(git symbolic-ref --quiet --short HEAD 2>/dev/null || true)
+    if [ -z "$current_branch" ]; then
+        print_error "Repository is in detached HEAD; cannot determine the update branch"
+        print_info "Please switch to the target branch first, for example: git checkout main"
         return 1
     fi
-    
-    # 强制重置到远程版本
-    print_info "应用远程更新..."
-    if ! git reset --hard origin/main; then
-        print_error "重置到远程版本失败"
-        # 尝试恢复
-        print_info "尝试恢复..."
+
+    local upstream_ref
+    local update_remote="origin"
+    local update_branch="$current_branch"
+    local update_ref="origin/$current_branch"
+    upstream_ref=$(git rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null || true)
+
+    if [ -n "$upstream_ref" ]; then
+        update_remote="${upstream_ref%%/*}"
+        update_branch="${upstream_ref#*/}"
+        update_ref="$upstream_ref"
+        print_info "Current branch: $current_branch, upstream: $update_ref"
+    else
+        print_warning "Current branch has no upstream; trying origin/$current_branch"
+        print_info "Current branch: $current_branch"
+    fi
+
+    print_info "Fetching latest code..."
+
+    # Fetch the remote branch that corresponds to the current local branch.
+    if ! git fetch "$update_remote" "$update_branch"; then
+        print_error "Failed to fetch remote branch: $update_remote/$update_branch"
+        return 1
+    fi
+
+    if ! git rev-parse --verify --quiet "$update_ref" >/dev/null; then
+        print_warning "Remote tracking ref $update_ref not found; using FETCH_HEAD"
+        update_ref="FETCH_HEAD"
+    fi
+
+    # Force sync to the resolved remote branch.
+    print_info "Applying remote update: $update_ref"
+    if ! git reset --hard "$update_ref"; then
+        print_error "Failed to reset to remote ref: $update_ref"
+        print_info "Trying to restore current HEAD..."
         git reset --hard HEAD
         return 1
     fi
@@ -641,7 +669,7 @@ update_service() {
     # 清理未跟踪的文件（可选，保留用户新建的文件）
     # git clean -fd  # 注释掉，避免删除用户的新文件
     
-    print_success "代码已更新到最新版本"
+    print_success "Code updated to latest $update_ref"
     
     # 更新依赖
     print_info "更新依赖..."
