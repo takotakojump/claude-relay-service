@@ -539,19 +539,10 @@ router.get('/claude-accounts/usage', authenticateAdmin, async (req, res) => {
     const now = Date.now()
     const usageCacheTtlMs = 300 * 1000
 
-    // 批量并发获取所有活跃 OAuth 账户的 Usage
+    // 批量并发获取活跃 Claude 账户的真实 Usage。Setup Token 是否支持由上游决定；
+    // 不再在本地提前降级为会话时间进度，403 会由 fetchOAuthUsage 安全处理。
     const usagePromises = accounts.map(async (account) => {
-      // 检查是否为 OAuth 账户：scopes 包含 OAuth 相关权限
-      const scopes = account.scopes && account.scopes.trim() ? account.scopes.split(' ') : []
-      const isOAuth = scopes.includes('user:profile') && scopes.includes('user:inference')
-
-      // 仅为 OAuth 授权的活跃账户调用 usage API
-      if (
-        isOAuth &&
-        account.isActive === 'true' &&
-        account.accessToken &&
-        account.status === 'active'
-      ) {
+      if (account.isActive === 'true' && account.accessToken && account.status === 'active') {
         // 若快照在 300 秒内更新，直接使用缓存避免频繁请求
         const cachedUsage = claudeAccountService.buildClaudeUsageSnapshot(account)
         const lastUpdatedAt = account.claudeUsageUpdatedAt
@@ -569,6 +560,8 @@ router.get('/claude-accounts/usage', authenticateAdmin, async (req, res) => {
           const usageData = await claudeAccountService.fetchOAuthUsage(account.id)
           if (usageData) {
             await claudeAccountService.updateClaudeUsageSnapshot(account.id, usageData)
+          } else {
+            await claudeAccountService.clearClaudeUsageSnapshot(account.id)
           }
           // 重新读取更新后的数据
           const updatedAccount = await redis.getClaudeAccount(account.id)
@@ -578,10 +571,10 @@ router.get('/claude-accounts/usage', authenticateAdmin, async (req, res) => {
           }
         } catch (error) {
           logger.debug(`Failed to fetch OAuth usage for ${account.id}:`, error.message)
+          await claudeAccountService.clearClaudeUsageSnapshot(account.id).catch(() => {})
           return { accountId: account.id, claudeUsage: null }
         }
       }
-      // Setup Token 账户不调用 usage API，直接返回 null
       return { accountId: account.id, claudeUsage: null }
     })
 

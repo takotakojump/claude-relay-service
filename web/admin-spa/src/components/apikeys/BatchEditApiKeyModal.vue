@@ -248,10 +248,7 @@
             <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
               设置 Claude 模型的周费用限制，仅对 Claude 模型请求生效
             </p>
-            <div
-              v-if="form.weeklyOpusCostLimit && Number(form.weeklyOpusCostLimit) > 0"
-              class="mt-2 flex gap-3"
-            >
+            <div v-if="showWeeklyResetControls" class="mt-2 flex gap-3">
               <div class="flex-1">
                 <label class="mb-1 block text-xs font-medium text-gray-600 dark:text-gray-400"
                   >重置日</label
@@ -299,6 +296,58 @@
               placeholder="不修改 (0 表示无限制)"
               type="number"
             />
+          </div>
+
+          <!-- 按模型族用量限制 -->
+          <div
+            class="rounded-lg border border-amber-200 bg-gradient-to-r from-amber-50 to-orange-50 p-3 dark:border-amber-700 dark:from-amber-900/20 dark:to-orange-900/20 sm:p-4"
+          >
+            <div class="flex items-center justify-between">
+              <div class="flex items-center gap-2">
+                <input
+                  id="batchEnableServiceLimits"
+                  v-model="enableServiceLimits"
+                  class="h-4 w-4 rounded border-gray-300 bg-gray-100 text-amber-600 focus:ring-amber-500"
+                  type="checkbox"
+                  @change="ensureServiceLimitsShape"
+                />
+                <label
+                  class="cursor-pointer text-sm font-semibold text-gray-700 dark:text-gray-300"
+                  for="batchEnableServiceLimits"
+                >
+                  按模型族用量限制
+                </label>
+              </div>
+              <span class="text-xs text-gray-500 dark:text-gray-400">
+                按请求模型族覆盖所有选中 Key，0 或留空表示不限
+              </span>
+            </div>
+            <div v-if="enableServiceLimits" class="mt-3 space-y-3">
+              <div
+                v-for="service in availableServices"
+                :key="`limit-${service.key}`"
+                class="rounded-md border border-gray-200 p-2 dark:border-gray-600"
+              >
+                <div class="mb-2 text-xs font-semibold text-gray-700 dark:text-gray-300">
+                  {{ service.label }}
+                </div>
+                <div class="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-5">
+                  <div v-for="col in serviceLimitColumns" :key="col.field">
+                    <label class="mb-1 block text-[11px] text-gray-500 dark:text-gray-400">{{
+                      col.label
+                    }}</label>
+                    <input
+                      v-model.number="form.serviceLimits[service.key][col.field]"
+                      class="form-input w-full border-gray-300 text-sm dark:border-gray-600 dark:bg-gray-800 dark:text-gray-200"
+                      min="0"
+                      placeholder="0"
+                      :step="col.step"
+                      type="number"
+                    />
+                  </div>
+                </div>
+              </div>
+            </div>
           </div>
 
           <!-- 激活状态 -->
@@ -487,6 +536,14 @@ import { showToast } from '@/utils/tools'
 import { useApiKeysStore } from '@/stores/apiKeys'
 import * as httpApis from '@/utils/http_apis'
 import AccountSelector from '@/components/common/AccountSelector.vue'
+import {
+  SERVICE_LIMIT_SERVICES,
+  SERVICE_LIMIT_COLUMNS,
+  ensureServiceLimitsShape as normalizeServiceLimitsShape,
+  buildServiceLimitsPayload as serializeServiceLimits,
+  validateServiceLimitsInput,
+  hasWeeklyServiceCostLimit
+} from '@/utils/serviceLimits'
 
 const props = defineProps({
   selectedKeys: {
@@ -557,8 +614,28 @@ const form = reactive({
   bedrockAccountId: '',
   droidAccountId: '',
   tags: [],
-  isActive: null // null表示不修改
+  isActive: null, // null表示不修改
+  serviceLimits: {} // 按模型族用量限制（仅在启用时批量覆盖）
 })
+
+// 按模型族用量限制相关（批量编辑：启用后会用同一套限额覆盖所有选中的 Key）
+const enableServiceLimits = ref(false)
+const availableServices = SERVICE_LIMIT_SERVICES
+const serviceLimitColumns = SERVICE_LIMIT_COLUMNS
+// Legacy and per-family weekly limits share the same reset schedule.
+const showWeeklyResetControls = computed(
+  () =>
+    Number(form.weeklyOpusCostLimit) > 0 ||
+    hasWeeklyServiceCostLimit(form.serviceLimits, enableServiceLimits.value)
+)
+
+function ensureServiceLimitsShape() {
+  normalizeServiceLimitsShape(form.serviceLimits)
+}
+
+function buildServiceLimitsPayload() {
+  return serializeServiceLimits(form.serviceLimits, true)
+}
 
 const UNCHANGED_OPTION_VALUE = '__KEEP_ORIGINAL__'
 
@@ -748,6 +825,15 @@ const refreshAccounts = async () => {
 
 // 批量更新API Keys
 const batchUpdateApiKeys = async () => {
+  const serviceLimitsError = validateServiceLimitsInput(
+    form.serviceLimits,
+    enableServiceLimits.value
+  )
+  if (serviceLimitsError) {
+    showToast(serviceLimitsError, 'error')
+    return
+  }
+
   loading.value = true
 
   try {
@@ -781,6 +867,11 @@ const batchUpdateApiKeys = async () => {
     }
     if (form.weeklyResetHour !== '' && form.weeklyResetHour !== null) {
       updates.weeklyResetHour = Number(form.weeklyResetHour)
+    }
+
+    // 按模型族用量限制（仅在启用时批量覆盖）
+    if (enableServiceLimits.value) {
+      updates.serviceLimits = buildServiceLimitsPayload()
     }
 
     // 权限设置

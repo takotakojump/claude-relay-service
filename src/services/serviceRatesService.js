@@ -142,12 +142,12 @@ class ServiceRatesService {
   /**
    * 根据模型名称获取服务类型
    */
-  getServiceFromModel(model) {
+  getServiceFamilyFromModel(model) {
     if (!model) {
-      return 'claude'
+      return null
     }
 
-    const modelLower = model.toLowerCase()
+    const modelLower = String(model).toLowerCase()
 
     // Claude 系列
     if (
@@ -167,6 +167,7 @@ class ServiceRatesService {
       modelLower.includes('o3') ||
       modelLower.includes('o4') ||
       modelLower.includes('codex') ||
+      modelLower.includes('embedding') ||
       modelLower.includes('davinci') ||
       modelLower.includes('curie') ||
       modelLower.includes('babbage') ||
@@ -203,8 +204,14 @@ class ServiceRatesService {
       return 'azure'
     }
 
-    // 默认返回 claude
-    return 'claude'
+    return null
+  }
+
+  /**
+   * Legacy rate lookup keeps Claude as its fallback for backward compatibility.
+   */
+  getServiceFromModel(model) {
+    return this.getServiceFamilyFromModel(model) || 'claude'
   }
 
   /**
@@ -222,6 +229,8 @@ class ServiceRatesService {
       ccr: 'ccr',
       bedrock: 'bedrock',
       gemini: 'gemini',
+      'gemini-api': 'gemini',
+      antigravity: 'gemini',
       'openai-responses': 'codex',
       openai: 'codex',
       azure: 'azure',
@@ -237,6 +246,14 @@ class ServiceRatesService {
    */
   getService(accountType, model) {
     return this.getServiceFromAccountType(accountType) || this.getServiceFromModel(model)
+  }
+
+  /**
+   * Resolve the quota bucket without silently assigning unknown models to Claude.
+   * The requested model wins; account type is only a fallback for unclassified models.
+   */
+  getServiceLimitFamily(model, accountType = null) {
+    return this.getServiceFamilyFromModel(model) || this.getServiceFromAccountType(accountType)
   }
 
   /**

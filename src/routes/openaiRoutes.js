@@ -20,6 +20,7 @@ const {
   extractOpenAICacheReadTokens
 } = require('../utils/requestDetailHelper')
 const requestBodyRuleService = require('../services/requestBodyRuleService')
+const serviceLimitService = require('../services/serviceLimitService')
 
 // Codex CLI 系统提示词（非 Codex CLI 客户端请求时注入，统一端点也使用）
 const CODEX_CLI_INSTRUCTIONS =
@@ -390,6 +391,10 @@ const handleResponses = async (req, res) => {
       sessionId,
       schedulerModel
     ))
+
+    if (!(await serviceLimitService.enforceForRequest(req, res, schedulerModel, accountType))) {
+      return
+    }
 
     // 如果是 OpenAI-Responses 账户，使用专门的中继服务处理
     if (accountType === 'openai-responses') {
@@ -1022,6 +1027,10 @@ async function handleImages(req, res) {
           type: 'invalid_request_error'
         }
       })
+    }
+
+    if (!(await serviceLimitService.enforceForRequest(req, res, imageModel, accountType))) {
+      return
     }
 
     const tool = { type: 'image_generation', action: 'generate', model: imageModel }

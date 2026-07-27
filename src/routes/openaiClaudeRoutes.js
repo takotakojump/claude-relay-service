@@ -17,6 +17,7 @@ const { getSafeMessage } = require('../utils/errorSanitizer')
 const sessionHelper = require('../utils/sessionHelper')
 const { updateRateLimitCounters } = require('../utils/rateLimitHelper')
 const pricingService = require('../services/pricingService')
+const serviceLimitService = require('../services/serviceLimitService')
 const { getEffectiveModel } = require('../utils/modelHelper')
 const { createRequestDetailMeta } = require('../utils/requestDetailHelper')
 
@@ -246,6 +247,12 @@ async function handleChatCompletion(req, res, apiKeyData) {
       throw error
     }
     const { accountId, accountType } = accountSelection
+
+    if (
+      !(await serviceLimitService.enforceForRequest(req, res, claudeRequest.model, accountType))
+    ) {
+      return
+    }
 
     // 获取该账号存储的 Claude Code headers
     const claudeCodeHeaders = await claudeCodeHeadersService.getAccountHeaders(accountId)

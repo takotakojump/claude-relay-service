@@ -6,6 +6,7 @@ const logger = require('../../utils/logger')
 const CostCalculator = require('../../utils/costCalculator')
 const config = require('../../../config/config')
 const requestBodyRuleService = require('../../services/requestBodyRuleService')
+const { validateServiceLimits } = require('../../utils/serviceLimitConfig')
 
 const router = express.Router()
 
@@ -1495,6 +1496,7 @@ router.post('/api-keys', authenticateAdmin, async (req, res) => {
       expirationMode, // 新增：过期模式
       icon, // 新增：图标
       serviceRates, // API Key 级别服务倍率
+      serviceLimits, // API Key 级别按服务的用量限制
       weeklyResetDay, // 周费用重置日 (1-7)
       weeklyResetHour, // 周费用重置时 (0-23)
       enableOpenAIResponsesCodexAdaptation,
@@ -1632,6 +1634,12 @@ router.post('/api-keys', authenticateAdmin, async (req, res) => {
       return res.status(400).json({ error: serviceRatesError })
     }
 
+    // 验证按服务的用量限制
+    const serviceLimitsError = validateServiceLimits(serviceLimits)
+    if (serviceLimitsError) {
+      return res.status(400).json({ error: serviceLimitsError })
+    }
+
     if (
       enableOpenAIResponsesCodexAdaptation !== undefined &&
       typeof enableOpenAIResponsesCodexAdaptation !== 'boolean'
@@ -1702,6 +1710,7 @@ router.post('/api-keys', authenticateAdmin, async (req, res) => {
       expirationMode,
       icon,
       serviceRates,
+      serviceLimits,
       weeklyResetDay:
         weeklyResetDay !== undefined && weeklyResetDay !== null && weeklyResetDay !== ''
           ? Number(weeklyResetDay)
@@ -1761,7 +1770,10 @@ router.post('/api-keys/batch', authenticateAdmin, async (req, res) => {
       activationUnit,
       expirationMode,
       icon,
-      serviceRates
+      serviceRates,
+      serviceLimits,
+      weeklyResetDay,
+      weeklyResetHour
     } = req.body
 
     // 输入验证
@@ -1789,6 +1801,30 @@ router.post('/api-keys/batch', authenticateAdmin, async (req, res) => {
     const batchServiceRatesError = validateServiceRates(serviceRates)
     if (batchServiceRatesError) {
       return res.status(400).json({ error: batchServiceRatesError })
+    }
+
+    // 验证按服务的用量限制
+    const batchServiceLimitsError = validateServiceLimits(serviceLimits)
+    if (batchServiceLimitsError) {
+      return res.status(400).json({ error: batchServiceLimitsError })
+    }
+
+    const hasWeeklyResetDay =
+      weeklyResetDay !== undefined && weeklyResetDay !== null && weeklyResetDay !== ''
+    const hasWeeklyResetHour =
+      weeklyResetHour !== undefined && weeklyResetHour !== null && weeklyResetHour !== ''
+
+    if (hasWeeklyResetDay && !Number.isInteger(Number(weeklyResetDay))) {
+      return res.status(400).json({ error: 'weeklyResetDay must be an integer between 1 and 7' })
+    }
+    if (hasWeeklyResetDay && (Number(weeklyResetDay) < 1 || Number(weeklyResetDay) > 7)) {
+      return res.status(400).json({ error: 'weeklyResetDay must be an integer between 1 and 7' })
+    }
+    if (hasWeeklyResetHour && !Number.isInteger(Number(weeklyResetHour))) {
+      return res.status(400).json({ error: 'weeklyResetHour must be an integer between 0 and 23' })
+    }
+    if (hasWeeklyResetHour && (Number(weeklyResetHour) < 0 || Number(weeklyResetHour) > 23)) {
+      return res.status(400).json({ error: 'weeklyResetHour must be an integer between 0 and 23' })
     }
 
     // 生成批量API Keys
@@ -1828,7 +1864,10 @@ router.post('/api-keys/batch', authenticateAdmin, async (req, res) => {
           activationUnit,
           expirationMode,
           icon,
-          serviceRates
+          serviceRates,
+          serviceLimits,
+          weeklyResetDay: hasWeeklyResetDay ? Number(weeklyResetDay) : 1,
+          weeklyResetHour: hasWeeklyResetHour ? Number(weeklyResetHour) : 0
         })
 
         // 保留原始 API Key 供返回
@@ -1910,6 +1949,14 @@ router.put('/api-keys/batch', authenticateAdmin, async (req, res) => {
       }
     }
 
+    // 验证按服务的用量限制
+    if (updates.serviceLimits !== undefined) {
+      const updateServiceLimitsError = validateServiceLimits(updates.serviceLimits)
+      if (updateServiceLimitsError) {
+        return res.status(400).json({ error: updateServiceLimitsError })
+      }
+    }
+
     logger.info(
       `🔄 Admin batch editing ${keyIds.length} API keys with updates: ${JSON.stringify(updates)}`
     )
@@ -1980,6 +2027,9 @@ router.put('/api-keys/batch', authenticateAdmin, async (req, res) => {
         }
         if (updates.serviceRates !== undefined) {
           finalUpdates.serviceRates = updates.serviceRates
+        }
+        if (updates.serviceLimits !== undefined) {
+          finalUpdates.serviceLimits = updates.serviceLimits
         }
         if (updates.weeklyResetDay !== undefined) {
           const day = Number(updates.weeklyResetDay)
@@ -2138,6 +2188,7 @@ router.put('/api-keys/:keyId', authenticateAdmin, async (req, res) => {
       tags,
       ownerId, // 新增：所有者ID字段
       serviceRates, // API Key 级别服务倍率
+      serviceLimits, // API Key 级别按服务的用量限制
       weeklyResetDay, // 周费用重置日 (1-7)
       weeklyResetHour, // 周费用重置时 (0-23)
       enableOpenAIResponsesCodexAdaptation,
@@ -2347,6 +2398,15 @@ router.put('/api-keys/:keyId', authenticateAdmin, async (req, res) => {
         return res.status(400).json({ error: singleServiceRatesError })
       }
       updates.serviceRates = serviceRates
+    }
+
+    // 处理按服务的用量限制
+    if (serviceLimits !== undefined) {
+      const singleServiceLimitsError = validateServiceLimits(serviceLimits)
+      if (singleServiceLimitsError) {
+        return res.status(400).json({ error: singleServiceLimitsError })
+      }
+      updates.serviceLimits = serviceLimits
     }
 
     if (enableOpenAIResponsesCodexAdaptation !== undefined) {

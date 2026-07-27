@@ -204,6 +204,7 @@ class ApiKeyService {
       expirationMode = 'fixed', // 新增：过期模式 'fixed'(固定时间) 或 'activation'(首次使用后激活)
       icon = '', // 新增：图标（base64编码）
       serviceRates = {}, // API Key 级别服务倍率覆盖
+      serviceLimits = {}, // API Key 级别按模型族的用量限制 (窗口/日/周)
       weeklyResetDay = 1, // 周费用重置日 (1=周一 ... 7=周日)
       weeklyResetHour = 0, // 周费用重置时 (0-23)
       enableOpenAIResponsesCodexAdaptation = true,
@@ -268,6 +269,7 @@ class ApiKeyService {
       userUsername: options.userUsername || '',
       icon: icon || '', // 新增：图标（base64编码）
       serviceRates: JSON.stringify(serviceRates || {}), // API Key 级别服务倍率
+      serviceLimits: JSON.stringify(serviceLimits || {}), // API Key 级别按模型族的用量限制
       weeklyResetDay: String(weeklyResetDay || 1), // 周费用重置日 (1-7)
       weeklyResetHour: String(weeklyResetHour || 0), // 周费用重置时 (0-23)
       enableOpenAIResponsesCodexAdaptation: String(enableOpenAIResponsesCodexAdaptation !== false),
@@ -342,6 +344,7 @@ class ApiKeyService {
       expiresAt: keyData.expiresAt,
       createdBy: keyData.createdBy,
       serviceRates: JSON.parse(keyData.serviceRates || '{}'), // API Key 级别服务倍率
+      serviceLimits: JSON.parse(keyData.serviceLimits || '{}'), // API Key 级别按模型族的用量限制
       enableOpenAIResponsesCodexAdaptation: parseBooleanWithDefault(
         keyData.enableOpenAIResponsesCodexAdaptation,
         true
@@ -496,6 +499,14 @@ class ApiKeyService {
         // 解析失败使用默认值
       }
 
+      // 解析 serviceLimits（按模型族的用量限制）
+      let serviceLimits = {}
+      try {
+        serviceLimits = keyData.serviceLimits ? JSON.parse(keyData.serviceLimits) : {}
+      } catch (e) {
+        // 解析失败使用默认值
+      }
+
       const openaiResponsesPayloadRules = parseOpenAIResponsesPayloadRules(
         keyData.openaiResponsesPayloadRules
       )
@@ -545,6 +556,7 @@ class ApiKeyService {
           weeklyResetHour: parseInt(keyData.weeklyResetHour || 0),
           tags,
           serviceRates,
+          serviceLimits,
           enableOpenAIResponsesCodexAdaptation,
           enableOpenAIResponsesPayloadRules,
           openaiResponsesPayloadRules
@@ -986,6 +998,11 @@ class ApiKeyService {
         } catch (e) {
           key.tags = []
         }
+        try {
+          key.serviceLimits = key.serviceLimits ? JSON.parse(key.serviceLimits) : {}
+        } catch (e) {
+          key.serviceLimits = {}
+        }
         key.openaiResponsesPayloadRules = parseOpenAIResponsesPayloadRules(
           key.openaiResponsesPayloadRules
         )
@@ -1243,6 +1260,17 @@ class ApiKeyService {
         } else {
           key.tags = []
         }
+        if (key.serviceLimits && typeof key.serviceLimits === 'object') {
+          // 已解析，保持不变
+        } else if (key.serviceLimits) {
+          try {
+            key.serviceLimits = JSON.parse(key.serviceLimits)
+          } catch {
+            key.serviceLimits = {}
+          }
+        } else {
+          key.serviceLimits = {}
+        }
         if (Array.isArray(key.openaiResponsesPayloadRules)) {
           // 已解析，保持不变
         } else if (key.openaiResponsesPayloadRules) {
@@ -1365,6 +1393,7 @@ class ApiKeyService {
         'userUsername', // 新增：用户名（所有者变更）
         'createdBy', // 新增：创建者（所有者变更）
         'serviceRates', // API Key 级别服务倍率
+        'serviceLimits', // API Key 级别按模型族的用量限制
         'weeklyResetDay', // 周费用重置日 (1-7)
         'weeklyResetHour', // 周费用重置时 (0-23)
         'enableOpenAIResponsesCodexAdaptation',
@@ -1380,10 +1409,13 @@ class ApiKeyService {
             field === 'allowedClients' ||
             field === 'tags' ||
             field === 'serviceRates' ||
+            field === 'serviceLimits' ||
             field === 'openaiResponsesPayloadRules'
           ) {
             // 特殊处理数组/对象字段
-            updatedData[field] = JSON.stringify(value || (field === 'serviceRates' ? {} : []))
+            updatedData[field] = JSON.stringify(
+              value || (field === 'serviceRates' || field === 'serviceLimits' ? {} : [])
+            )
           } else if (field === 'permissions') {
             // 权限字段：规范化后JSON序列化，与createApiKey保持一致
             updatedData[field] = JSON.stringify(normalizePermissions(value))
@@ -1731,6 +1763,16 @@ class ApiKeyService {
 
         // 记录 Opus 周费用（如果适用）
         await this.recordOpusCost(keyId, ratedCost, realCost, model, accountType)
+
+        // 记录模型族日/周费用（如果该 key 配置了模型族限额）
+        await this.recordServiceCost(
+          keyId,
+          ratedCost,
+          realCost,
+          model,
+          accountType,
+          finalizedRequestMeta
+        )
       } else {
         logger.debug(`💰 No cost recorded for ${keyId} - zero cost for model: ${model}`)
       }
@@ -1854,6 +1896,74 @@ class ApiKeyService {
     }
   }
 
+  // 📊 Record per-family daily/weekly cost (rated) for model-family usage limits.
+  // Only accumulates when the key actually has serviceLimits configured (zero cost otherwise).
+  // Classify by the requested model family, regardless of the selected upstream account.
+  async recordServiceCost(
+    keyId,
+    ratedCost,
+    realCost,
+    model,
+    accountType = null,
+    requestMeta = null
+  ) {
+    try {
+      if (!(ratedCost > 0)) {
+        return
+      }
+      const keyData = await redis.getApiKey(keyId)
+      let serviceLimits = {}
+      try {
+        serviceLimits = keyData?.serviceLimits ? JSON.parse(keyData.serviceLimits) : {}
+      } catch (e) {
+        serviceLimits = {}
+      }
+      if (!serviceLimits || Object.keys(serviceLimits).length === 0) {
+        return // No per-service limits configured — skip Redis writes entirely
+      }
+
+      const reservations = requestMeta?.serviceLimitReservations || {}
+      const reservedServices = Object.keys(reservations)
+      const resolvedService = serviceRatesService.getServiceLimitFamily(model, accountType)
+      const service = reservedServices.length === 1 ? reservedServices[0] : resolvedService
+      if (!service) {
+        logger.warn(
+          `Skipping service cost for unclassified model: key=${keyId}, model=${model || 'unknown'}, accountType=${accountType || 'unknown'}`
+        )
+        return
+      }
+      const resetDay = parseInt(keyData?.weeklyResetDay || 1)
+      const resetHour = parseInt(keyData?.weeklyResetHour || 0)
+      const limits = serviceLimits[service] || {}
+
+      if (Number(limits.windowMinutes) > 0 && Number(limits.windowCost) > 0) {
+        const windowStart = reservations[service]?.windowStart
+        if (Number.isFinite(Number(windowStart)) && Number(windowStart) > 0) {
+          await redis.incrementServiceWindowCost(keyId, service, windowStart, ratedCost)
+        } else {
+          logger.warn(
+            `Skipping service window cost without an entry-window reservation: key=${keyId}, service=${service}`
+          )
+        }
+      }
+
+      await redis.incrementServiceDailyCost(keyId, service, ratedCost)
+      await redis.incrementServiceWeeklyCost(
+        keyId,
+        service,
+        ratedCost,
+        realCost,
+        resetDay,
+        resetHour
+      )
+      logger.database(
+        `💰 Recorded service cost for ${keyId}: service=${service}, rated=$${ratedCost.toFixed(6)}, real=$${realCost.toFixed(6)}, model: ${model}`
+      )
+    } catch (error) {
+      logger.error('❌ Failed to record service cost:', error)
+    }
+  }
+
   // 📊 记录使用情况（新版本，支持详细的缓存类型）
   async recordUsageWithDetails(
     keyId,
@@ -1967,6 +2077,16 @@ class ApiKeyService {
           realCostWithDetails,
           model,
           accountType
+        )
+
+        // 记录模型族日/周费用（如果该 key 配置了模型族限额）
+        await this.recordServiceCost(
+          keyId,
+          ratedCostWithDetails,
+          realCostWithDetails,
+          model,
+          accountType,
+          finalizedRequestMeta
         )
 
         // 记录详细的缓存费用（如果有）

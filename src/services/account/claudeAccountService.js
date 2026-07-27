@@ -17,6 +17,7 @@ const {
 const tokenRefreshService = require('../tokenRefreshService')
 const LRUCache = require('../../utils/lruCache')
 const { formatDateWithTimezone, getISOStringWithTimezone } = require('../../utils/dateHelper')
+const { isClaudeOAuthAccount } = require('../../utils/claudeAccountAuth')
 const { isOpus45OrNewer, RATE_LIMITED_MODEL_FAMILIES } = require('../../utils/modelHelper')
 const {
   parseBooleanLike,
@@ -571,10 +572,7 @@ class ClaudeAccountService {
           // 构建 Claude Usage 快照（从 Redis 读取）
           const claudeUsage = this.buildClaudeUsageSnapshot(account)
 
-          // 判断授权类型：检查 scopes 是否包含 OAuth 相关权限
-          const scopes = account.scopes && account.scopes.trim() ? account.scopes.split(' ') : []
-          const isOAuth = scopes.includes('user:profile') && scopes.includes('user:inference')
-          const authType = isOAuth ? 'oauth' : 'setup-token'
+          const authType = isClaudeOAuthAccount(account) ? 'oauth' : 'setup-token'
           const parsedExtInfo = this._safeParseJson(account.extInfo)
           const parsedProxy = this._safeParseAccountFieldJson(account.proxy, 'proxy', account.id)
           const parsedSubscriptionInfo = this._safeParseAccountFieldJson(
@@ -851,6 +849,21 @@ class ClaudeAccountService {
             `🔄 Adjusted expiry time to 10 minutes for account ${accountId} with refresh token`
           )
         }
+      }
+
+      const credentialsChanged = ['claudeAiOauth', 'refreshToken', 'accountType'].some((field) =>
+        Object.prototype.hasOwnProperty.call(updates, field)
+      )
+      if (credentialsChanged) {
+        Object.assign(updatedData, {
+          claudeFiveHourUtilization: '',
+          claudeFiveHourResetsAt: '',
+          claudeSevenDayUtilization: '',
+          claudeSevenDayResetsAt: '',
+          claudeSevenDayOpusUtilization: '',
+          claudeSevenDayOpusResetsAt: '',
+          claudeUsageUpdatedAt: ''
+        })
       }
 
       updatedData.updatedAt = new Date().toISOString()
@@ -2199,40 +2212,52 @@ class ClaudeAccountService {
       return
     }
 
-    const updates = {}
+    const updates = {
+      claudeFiveHourUtilization: '',
+      claudeFiveHourResetsAt: '',
+      claudeSevenDayUtilization: '',
+      claudeSevenDayResetsAt: '',
+      claudeSevenDayOpusUtilization: '',
+      claudeSevenDayOpusResetsAt: ''
+    }
 
     // 5小时窗口
     if (usageData.five_hour) {
-      if (usageData.five_hour.utilization !== undefined) {
+      if (
+        usageData.five_hour.utilization !== undefined &&
+        usageData.five_hour.utilization !== null
+      ) {
         updates.claudeFiveHourUtilization = String(usageData.five_hour.utilization)
       }
-      if (usageData.five_hour.resets_at) {
-        updates.claudeFiveHourResetsAt = usageData.five_hour.resets_at
+      if (usageData.five_hour.resets_at !== undefined) {
+        updates.claudeFiveHourResetsAt = usageData.five_hour.resets_at || ''
       }
     }
 
     // 7天窗口
     if (usageData.seven_day) {
-      if (usageData.seven_day.utilization !== undefined) {
+      if (
+        usageData.seven_day.utilization !== undefined &&
+        usageData.seven_day.utilization !== null
+      ) {
         updates.claudeSevenDayUtilization = String(usageData.seven_day.utilization)
       }
-      if (usageData.seven_day.resets_at) {
-        updates.claudeSevenDayResetsAt = usageData.seven_day.resets_at
+      if (usageData.seven_day.resets_at !== undefined) {
+        updates.claudeSevenDayResetsAt = usageData.seven_day.resets_at || ''
       }
     }
 
     // 7天Opus窗口
     if (usageData.seven_day_sonnet) {
-      if (usageData.seven_day_sonnet.utilization !== undefined) {
+      if (
+        usageData.seven_day_sonnet.utilization !== undefined &&
+        usageData.seven_day_sonnet.utilization !== null
+      ) {
         updates.claudeSevenDayOpusUtilization = String(usageData.seven_day_sonnet.utilization)
       }
-      if (usageData.seven_day_sonnet.resets_at) {
-        updates.claudeSevenDayOpusResetsAt = usageData.seven_day_sonnet.resets_at
+      if (usageData.seven_day_sonnet.resets_at !== undefined) {
+        updates.claudeSevenDayOpusResetsAt = usageData.seven_day_sonnet.resets_at || ''
       }
-    }
-
-    if (Object.keys(updates).length === 0) {
-      return
     }
 
     updates.claudeUsageUpdatedAt = new Date().toISOString()
@@ -2246,6 +2271,10 @@ class ClaudeAccountService {
         Object.keys(updates)
       )
     }
+  }
+
+  async clearClaudeUsageSnapshot(accountId) {
+    await this.updateClaudeUsageSnapshot(accountId, {})
   }
 
   // 📊 获取账号 Profile 信息并更新账号类型

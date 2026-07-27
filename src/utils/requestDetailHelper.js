@@ -571,6 +571,8 @@ function createRequestDetailMeta(req, overrides = {}) {
   const reqStartedAt = toFiniteNumber(req?.requestStartedAt)
   const effectiveStart = requestStartedAt ?? reqStartedAt
   const requestBody = overrides.requestBody !== undefined ? overrides.requestBody : req?.body
+  const serviceLimitReservations =
+    overrides.serviceLimitReservations || req?._serviceLimitReservations || null
 
   return {
     requestId: overrides.requestId || req?.requestId || null,
@@ -583,6 +585,14 @@ function createRequestDetailMeta(req, overrides = {}) {
         : Boolean(requestBody && requestBody.stream === true),
     durationMs: durationMs ?? (effectiveStart ? Math.max(0, nowMs - effectiveStart) : null),
     requestStartedAt: effectiveStart ? new Date(effectiveStart).toISOString() : null,
+    serviceLimitReservations: serviceLimitReservations
+      ? Object.fromEntries(
+          Object.entries(serviceLimitReservations).map(([service, reservation]) => [
+            service,
+            { ...reservation }
+          ])
+        )
+      : null,
     requestBody
   }
 }

@@ -1302,6 +1302,7 @@ const authenticateApiKey = async (req, res, next) => {
       claudeConsoleAccountId: validation.keyData.claudeConsoleAccountId, // 添加 Claude Console 账号ID
       geminiAccountId: validation.keyData.geminiAccountId,
       openaiAccountId: validation.keyData.openaiAccountId, // 添加 OpenAI 账号ID
+      azureOpenaiAccountId: validation.keyData.azureOpenaiAccountId,
       bedrockAccountId: validation.keyData.bedrockAccountId, // 添加 Bedrock 账号ID
       droidAccountId: validation.keyData.droidAccountId,
       ccrAccountId: validation.keyData.ccrAccountId, // 添加 CCR 账号ID（绑定后无前缀直连 CCR）
@@ -1319,6 +1320,9 @@ const authenticateApiKey = async (req, res, next) => {
       dailyCost: validation.keyData.dailyCost,
       totalCostLimit: validation.keyData.totalCostLimit,
       totalCost: validation.keyData.totalCost,
+      serviceLimits: validation.keyData.serviceLimits || {},
+      weeklyResetDay: validation.keyData.weeklyResetDay || 1,
+      weeklyResetHour: validation.keyData.weeklyResetHour || 0,
       enableOpenAIResponsesCodexAdaptation: validation.keyData.enableOpenAIResponsesCodexAdaptation,
       enableOpenAIResponsesPayloadRules: validation.keyData.enableOpenAIResponsesPayloadRules,
       openaiResponsesPayloadRules: validation.keyData.openaiResponsesPayloadRules

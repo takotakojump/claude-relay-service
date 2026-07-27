@@ -8,6 +8,7 @@ const apiKeyService = require('../services/apiKeyService')
 const crypto = require('crypto')
 const upstreamErrorHelper = require('../utils/upstreamErrorHelper')
 const { createRequestDetailMeta } = require('../utils/requestDetailHelper')
+const serviceLimitService = require('../services/serviceLimitService')
 
 // 支持的模型列表 - 基于真实的 Azure OpenAI 模型
 const ALLOWED_MODELS = {
@@ -195,6 +196,10 @@ router.post('/chat/completions', authenticateApiKey, async (req, res) => {
       account = await azureOpenaiAccountService.selectAvailableAccount(sessionId)
     }
 
+    if (!(await serviceLimitService.enforceForRequest(req, res, '', 'azure-openai'))) {
+      return
+    }
+
     // 发送请求到 Azure OpenAI
     const response = await azureOpenaiRelayService.handleAzureOpenAIRequest({
       account,
@@ -326,6 +331,10 @@ router.post('/responses', authenticateApiKey, async (req, res) => {
       account = await azureOpenaiAccountService.selectAvailableAccount(sessionId)
     }
 
+    if (!(await serviceLimitService.enforceForRequest(req, res, '', 'azure-openai'))) {
+      return
+    }
+
     // 发送请求到 Azure OpenAI
     const response = await azureOpenaiRelayService.handleAzureOpenAIRequest({
       account,
@@ -454,6 +463,10 @@ router.post('/embeddings', authenticateApiKey, async (req, res) => {
     // 如果没有绑定账户或账户不可用，选择一个可用账户
     if (!account || account.isActive !== 'true') {
       account = await azureOpenaiAccountService.selectAvailableAccount(sessionId)
+    }
+
+    if (!(await serviceLimitService.enforceForRequest(req, res, '', 'azure-openai'))) {
+      return
     }
 
     // 发送请求到 Azure OpenAI

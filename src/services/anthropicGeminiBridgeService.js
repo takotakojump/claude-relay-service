@@ -40,6 +40,7 @@ const unifiedGeminiScheduler = require('./scheduler/unifiedGeminiScheduler')
 const sessionHelper = require('../utils/sessionHelper')
 const signatureCache = require('../utils/signatureCache')
 const apiKeyService = require('./apiKeyService')
+const serviceLimitService = require('./serviceLimitService')
 const { updateRateLimitCounters } = require('../utils/rateLimitHelper')
 const { parseSSELine } = require('../utils/sseParser')
 const { sanitizeUpstreamError } = require('../utils/errorSanitizer')
@@ -1925,6 +1926,10 @@ async function handleAnthropicMessagesToGemini(req, res, { vendor, baseModel }) 
     return res.status(503).json(buildAnthropicError('Gemini OAuth account not found'))
   }
 
+  if (!(await serviceLimitService.enforceForRequest(req, res, baseModel, accountType))) {
+    return undefined
+  }
+
   await geminiAccountService.markAccountUsed(account.id)
 
   let proxyConfig = null
@@ -3042,6 +3047,10 @@ async function handleAnthropicCountTokensToGemini(req, res, { vendor }) {
   const account = await geminiAccountService.getAccount(accountId)
   if (!account) {
     return res.status(503).json(buildAnthropicError('Gemini OAuth account not found'))
+  }
+
+  if (!(await serviceLimitService.enforceForRequest(req, res, model, accountType))) {
+    return undefined
   }
 
   await geminiAccountService.markAccountUsed(account.id)

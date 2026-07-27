@@ -5,6 +5,7 @@ const droidRelayService = require('../services/relay/droidRelayService')
 const sessionHelper = require('../utils/sessionHelper')
 const logger = require('../utils/logger')
 const apiKeyService = require('../services/apiKeyService')
+const serviceLimitService = require('../services/serviceLimitService')
 
 const router = express.Router()
 
@@ -34,6 +35,10 @@ router.post('/claude/v1/messages', authenticateApiKey, async (req, res) => {
         error: 'permission_denied',
         message: '此 API Key 未启用 Droid 权限'
       })
+    }
+
+    if (!(await serviceLimitService.enforceForRequest(req, res, '', 'droid'))) {
+      return
     }
 
     const result = await droidRelayService.relayRequest(
@@ -85,6 +90,10 @@ router.post('/comm/v1/chat/completions', authenticateApiKey, async (req, res) =>
       })
     }
 
+    if (!(await serviceLimitService.enforceForRequest(req, res, '', 'droid'))) {
+      return
+    }
+
     const result = await droidRelayService.relayRequest(
       req.body,
       req.apiKey,
@@ -130,6 +139,10 @@ router.post(['/openai/v1/responses', '/openai/responses'], authenticateApiKey, a
         error: 'permission_denied',
         message: '此 API Key 未启用 Droid 权限'
       })
+    }
+
+    if (!(await serviceLimitService.enforceForRequest(req, res, '', 'droid'))) {
+      return
     }
 
     const result = await droidRelayService.relayRequest(

@@ -8,6 +8,7 @@ const { getAvailableModels } = require('../services/relay/geminiRelayService')
 const crypto = require('crypto')
 const apiKeyService = require('../services/apiKeyService')
 const { createRequestDetailMeta } = require('../utils/requestDetailHelper')
+const serviceLimitService = require('../services/serviceLimitService')
 
 // 生成会话哈希
 function generateSessionHash(req) {
@@ -314,6 +315,10 @@ router.post('/v1/chat/completions', authenticateApiKey, async (req, res) => {
           code: 'service_unavailable'
         }
       })
+    }
+
+    if (!(await serviceLimitService.enforceForRequest(req, res, model, 'gemini'))) {
+      return undefined
     }
 
     logger.info(`Using Gemini account: ${account.id} for API key: ${apiKeyData.id}`)

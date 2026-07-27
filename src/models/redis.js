@@ -25,6 +25,15 @@ function getDateStringInTimezone(date = new Date()) {
   ).padStart(2, '0')}`
 }
 
+function getNextDailyResetTime(date = new Date()) {
+  const offset = config.system.timezoneOffset || 8
+  const timezoneDate = getDateInTimezone(date)
+  const nextReset = new Date(timezoneDate)
+  nextReset.setUTCDate(timezoneDate.getUTCDate() + 1)
+  nextReset.setUTCHours(0, 0, 0, 0)
+  return new Date(nextReset.getTime() - offset * 3600000)
+}
+
 // 获取配置时区的小时 (0-23)
 function getHourInTimezone(date = new Date()) {
   const tzDate = getDateInTimezone(date)
@@ -1953,6 +1962,156 @@ class RedisClient {
     await this.client.set(weeklyKey, String(amount || 0))
     // 保留 2 周，足够覆盖"当前周期 + 上周期"查看/回填
     await this.client.expire(weeklyKey, 14 * 24 * 3600)
+  }
+
+  // 💰 Get a service's daily cost (rated) for per-service daily limit checks
+  async getServiceDailyCost(keyId, service) {
+    const today = getDateStringInTimezone()
+    const costKey = `usage:cost:service:daily:${keyId}:${service}:${today}`
+    const cost = await this.client.get(costKey)
+    return parseFloat(cost || 0)
+  }
+
+  // 💰 Increment a service's daily cost (rated amount) for per-service daily limits
+  async incrementServiceDailyCost(keyId, service, amount) {
+    const today = getDateStringInTimezone()
+    const dailyKey = `usage:cost:service:daily:${keyId}:${service}:${today}`
+    const pipeline = this.client.pipeline()
+    pipeline.incrbyfloat(dailyKey, amount)
+    pipeline.expire(dailyKey, 86400 * 30) // 30 days, aligned with usage:cost:daily
+    await pipeline.exec()
+  }
+
+  // 💰 Get a service's weekly cost (rated) with a custom reset period
+  async getServiceWeeklyCost(keyId, service, resetDay = 1, resetHour = 0) {
+    const periodStr = getPeriodString(resetDay, resetHour)
+    const costKey = `usage:cost:service:weekly:${keyId}:${service}:${periodStr}`
+    const cost = await this.client.get(costKey)
+    return parseFloat(cost || 0)
+  }
+
+  // 💰 Increment a service's weekly cost (rated + real) with a custom reset period
+  async incrementServiceWeeklyCost(
+    keyId,
+    service,
+    amount,
+    realAmount = null,
+    resetDay = 1,
+    resetHour = 0
+  ) {
+    const periodStr = getPeriodString(resetDay, resetHour)
+    const weeklyKey = `usage:cost:service:weekly:${keyId}:${service}:${periodStr}`
+    const realWeeklyKey = `usage:cost:service:real:weekly:${keyId}:${service}:${periodStr}`
+    const actualRealAmount = realAmount !== null ? realAmount : amount
+    const pipeline = this.client.pipeline()
+    pipeline.incrbyfloat(weeklyKey, amount)
+    pipeline.incrbyfloat(realWeeklyKey, actualRealAmount)
+    pipeline.expire(weeklyKey, 14 * 24 * 3600) // 14 days, aligned with the opus weekly bucket
+    pipeline.expire(realWeeklyKey, 14 * 24 * 3600)
+    await pipeline.exec()
+  }
+
+  async checkAndIncrementServiceWindow(
+    keyId,
+    service,
+    windowMinutes,
+    requestLimit = 0,
+    costLimit = 0
+  ) {
+    const windowStartKey = `rate_limit:window_start:${keyId}:${service}`
+    const requestCountKeyPrefix = `rate_limit:requests:${keyId}:${service}`
+    const costCountKeyPrefix = `rate_limit:cost:${keyId}:${service}`
+    const now = Date.now()
+    const durationMs = Math.round(Number(windowMinutes) * 60 * 1000)
+    const completedRequestRetentionMs = 24 * 60 * 60 * 1000
+
+    const script = `
+      local now = tonumber(ARGV[1])
+      local duration = tonumber(ARGV[2])
+      local requestLimit = tonumber(ARGV[3])
+      local costLimit = tonumber(ARGV[4])
+      local completedRequestRetention = tonumber(ARGV[5])
+      local windowStartValue = redis.call('GET', KEYS[1])
+      local windowStart = tonumber(windowStartValue)
+      local isNewWindow = not windowStart or now - windowStart >= duration
+
+      if isNewWindow then
+        windowStart = now
+        windowStartValue = ARGV[1]
+        redis.call('PSETEX', KEYS[1], duration, windowStartValue)
+      end
+
+      local requestCountKey = KEYS[2] .. ':' .. windowStartValue
+      local costCountKey = KEYS[3] .. ':' .. windowStartValue
+
+      if isNewWindow then
+        redis.call('PSETEX', requestCountKey, duration, '0')
+        redis.call('PSETEX', costCountKey, duration + completedRequestRetention, '0')
+      else
+        local remaining = math.max(1, duration - (now - windowStart))
+        if redis.call('EXISTS', requestCountKey) == 0 then
+          redis.call('PSETEX', requestCountKey, remaining, '0')
+        else
+          redis.call('PEXPIRE', requestCountKey, remaining)
+        end
+        if redis.call('EXISTS', costCountKey) == 0 then
+          redis.call('PSETEX', costCountKey, remaining + completedRequestRetention, '0')
+        end
+        redis.call('PEXPIRE', KEYS[1], remaining)
+      end
+
+      local currentRequests = tonumber(redis.call('GET', requestCountKey)) or 0
+      local currentCost = tonumber(redis.call('GET', costCountKey)) or 0
+      if requestLimit > 0 and currentRequests >= requestLimit then
+        return {0, 'requests', windowStartValue, tostring(currentRequests), tostring(currentCost), requestCountKey, costCountKey}
+      end
+      if costLimit > 0 and currentCost >= costLimit then
+        return {0, 'cost', windowStartValue, tostring(currentRequests), tostring(currentCost), requestCountKey, costCountKey}
+      end
+
+      currentRequests = redis.call('INCR', requestCountKey)
+      return {1, '', windowStartValue, tostring(currentRequests), tostring(currentCost), requestCountKey, costCountKey}
+    `
+
+    const result = await this.client.eval(
+      script,
+      3,
+      windowStartKey,
+      requestCountKeyPrefix,
+      costCountKeyPrefix,
+      now,
+      durationMs,
+      requestLimit,
+      costLimit,
+      completedRequestRetentionMs
+    )
+    const windowStart = Number(result[2])
+
+    return {
+      allowed: Number(result[0]) === 1,
+      reason: result[1] || null,
+      currentRequests: Number(result[3]) || 0,
+      currentCost: Number(result[4]) || 0,
+      windowStart,
+      resetAt: new Date(windowStart + durationMs),
+      requestCountKey: result[5],
+      costCountKey: result[6]
+    }
+  }
+
+  async incrementServiceWindowCost(keyId, service, windowStart, amount) {
+    const normalizedWindowStart = Number(windowStart)
+    if (!Number.isFinite(normalizedWindowStart) || normalizedWindowStart <= 0) {
+      return null
+    }
+    const costCountKey = `rate_limit:cost:${keyId}:${service}:${Math.trunc(normalizedWindowStart)}`
+    const script = `
+      if redis.call('EXISTS', KEYS[1]) == 0 then
+        return nil
+      end
+      return redis.call('INCRBYFLOAT', KEYS[1], ARGV[1])
+    `
+    return this.client.eval(script, 1, costCountKey, amount)
   }
 
   // 💰 计算账户的每日费用（基于模型使用，使用索引集合替代 KEYS）
@@ -3908,6 +4067,7 @@ redisClient.releaseAccountLock = async function (lockKey, lockValue) {
 // 导出时区辅助函数
 redisClient.getDateInTimezone = getDateInTimezone
 redisClient.getDateStringInTimezone = getDateStringInTimezone
+redisClient.getNextDailyResetTime = getNextDailyResetTime
 redisClient.getHourInTimezone = getHourInTimezone
 redisClient.getWeekStringInTimezone = getWeekStringInTimezone
 redisClient.getPeriodString = getPeriodString

@@ -12,6 +12,7 @@ const { getEffectiveModel, parseVendorPrefixedModel } = require('../utils/modelH
 const sessionHelper = require('../utils/sessionHelper')
 const { updateRateLimitCounters } = require('../utils/rateLimitHelper')
 const claudeRelayConfigService = require('../services/claudeRelayConfigService')
+const serviceLimitService = require('../services/serviceLimitService')
 const claudeAccountService = require('../services/account/claudeAccountService')
 const claudeConsoleAccountService = require('../services/account/claudeConsoleAccountService')
 const {
@@ -430,6 +431,10 @@ async function handleMessagesRequest(req, res) {
             return res.json(buildMockWarmupResponse(req.body.model))
           }
         }
+      }
+
+      if (!(await serviceLimitService.enforceForRequest(req, res, requestedModel, accountType))) {
+        return
       }
 
       // 根据账号类型选择对应的转发服务并调用
@@ -1144,6 +1149,10 @@ async function handleMessagesRequest(req, res) {
         }
       }
 
+      if (!(await serviceLimitService.enforceForRequest(req, res, requestedModel, accountType))) {
+        return
+      }
+
       // 根据账号类型选择对应的转发服务
       let response
       logger.debug(`[DEBUG] Request query params: ${JSON.stringify(req.query)}`)
@@ -1792,6 +1801,10 @@ router.post('/v1/messages/count_tokens', authenticateApiKey, async (req, res) =>
         )
         return { fallbackResponse: true }
       }
+    }
+
+    if (!(await serviceLimitService.enforceForRequest(req, res, requestedModel, accountType))) {
+      return { serviceLimitRejected: true }
     }
 
     const relayOptions = {

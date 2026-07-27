@@ -22,6 +22,7 @@ const { getSafeMessage } = require('../utils/errorSanitizer')
 const ProxyHelper = require('../utils/proxyHelper')
 const upstreamErrorHelper = require('../utils/upstreamErrorHelper')
 const { createRequestDetailMeta } = require('../utils/requestDetailHelper')
+const serviceLimitService = require('../services/serviceLimitService')
 
 // 处理 Gemini 上游错误，标记账户为临时不可用
 const handleGeminiUpstreamError = async (
@@ -484,6 +485,10 @@ async function handleMessages(req, res) {
       logger.info(`Using Gemini OAuth account: ${account.id} for API key: ${apiKeyData.id}`)
       // 标记 OAuth 账户被使用
       await geminiAccountService.markAccountUsed(account.id)
+    }
+
+    if (!(await serviceLimitService.enforceForRequest(req, res, model, accountType))) {
+      return undefined
     }
 
     // 创建中止控制器
@@ -1485,6 +1490,10 @@ async function handleCountTokens(req, res) {
       })
     }
 
+    if (!(await serviceLimitService.enforceForRequest(req, res, model, accountType))) {
+      return undefined
+    }
+
     const version = req.path.includes('v1beta') ? 'v1beta' : 'v1'
     logger.info(
       `CountTokens request (${version}) - ${isApiAccount ? 'API Key' : 'OAuth'} Account`,
@@ -1627,6 +1636,10 @@ async function handleGenerateContent(req, res) {
           type: 'invalid_account_type'
         }
       })
+    }
+
+    if (!(await serviceLimitService.enforceForRequest(req, res, model, accountType))) {
+      return undefined
     }
 
     account = await geminiAccountService.getAccount(accountId)
@@ -1871,6 +1884,10 @@ async function handleStreamGenerateContent(req, res) {
           type: 'invalid_account_type'
         }
       })
+    }
+
+    if (!(await serviceLimitService.enforceForRequest(req, res, model, accountType))) {
+      return undefined
     }
 
     account = await geminiAccountService.getAccount(accountId)
@@ -2293,6 +2310,10 @@ async function handleStandardGenerateContent(req, res) {
     )
     ;({ accountId, accountType } = schedulerResult)
 
+    if (!(await serviceLimitService.enforceForRequest(req, res, model, accountType))) {
+      return undefined
+    }
+
     isApiAccount = accountType === 'gemini-api'
     const actualAccountId = accountId
 
@@ -2585,6 +2606,10 @@ async function handleStandardStreamGenerateContent(req, res) {
       { allowApiAccounts: true }
     )
     ;({ accountId, accountType } = schedulerResult)
+
+    if (!(await serviceLimitService.enforceForRequest(req, res, model, accountType))) {
+      return undefined
+    }
 
     isApiAccount = accountType === 'gemini-api'
     const actualAccountId = accountId
