@@ -843,7 +843,7 @@ class RedisClient {
     }
 
     // 对象字段（JSON 解析）
-    const objectFields = ['serviceRates']
+    const objectFields = ['serviceRates', 'serviceLimits']
     for (const field of objectFields) {
       if (parsed[field]) {
         try {
@@ -852,6 +852,10 @@ class RedisClient {
           parsed[field] = {}
         }
       }
+    }
+
+    if (!parsed.serviceLimits || typeof parsed.serviceLimits !== 'object') {
+      parsed.serviceLimits = {}
     }
 
     return parsed

@@ -24,6 +24,23 @@ function toPositiveNumber(value) {
   return Number.isFinite(number) && number > 0 ? number : 0
 }
 
+// 接口可能返回已解析的对象，也可能返回原始 JSON 字符串（取决于列表/详情走的解析路径）。
+// 直接展开字符串会得到字符下标对象，导致表单显示为空并在下次保存时清空配置。
+export function parseServiceLimits(raw) {
+  if (typeof raw === 'string') {
+    try {
+      const parsed = JSON.parse(raw)
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}
+    } catch {
+      return {}
+    }
+  }
+  if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+    return { ...raw }
+  }
+  return {}
+}
+
 export function ensureServiceLimitsShape(serviceLimits) {
   for (const service of SERVICE_LIMIT_SERVICES) {
     const existing = serviceLimits[service.key] || {}

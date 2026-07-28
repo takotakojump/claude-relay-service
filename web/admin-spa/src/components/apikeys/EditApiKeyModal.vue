@@ -1105,6 +1105,7 @@ import {
   SERVICE_LIMIT_COLUMNS,
   ensureServiceLimitsShape as normalizeServiceLimitsShape,
   buildServiceLimitsPayload as serializeServiceLimits,
+  parseServiceLimits,
   validateServiceLimitsInput,
   hasWeeklyServiceCostLimit
 } from '@/utils/serviceLimits'
@@ -1804,7 +1805,7 @@ onMounted(async () => {
   form.name = props.apiKey.name
   form.serviceRates = props.apiKey.serviceRates || {}
   enableServiceRates.value = Object.keys(form.serviceRates).length > 0
-  form.serviceLimits = { ...(props.apiKey.serviceLimits || {}) }
+  form.serviceLimits = parseServiceLimits(props.apiKey.serviceLimits)
   enableServiceLimits.value = Object.keys(form.serviceLimits).length > 0
   ensureServiceLimitsShape()
 
