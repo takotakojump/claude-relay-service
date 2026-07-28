@@ -19,7 +19,8 @@ jest.mock('../src/middleware/auth', () => ({
 }))
 
 jest.mock('../src/services/apiKeyService', () => ({
-  updateApiKey: jest.fn()
+  updateApiKey: jest.fn(),
+  generateApiKey: jest.fn()
 }))
 
 jest.mock('../src/models/redis', () => ({}))
@@ -77,10 +78,20 @@ function findPutHandler(path) {
   return route?.[2]
 }
 
+function findPostHandler(path) {
+  const route = mockRouter.post.mock.calls.find((call) => call[0] === path)
+  return route?.[2]
+}
+
 describe('admin api keys route payload rule updates', () => {
   beforeEach(() => {
     apiKeyService.updateApiKey.mockReset()
     apiKeyService.updateApiKey.mockResolvedValue()
+    apiKeyService.generateApiKey.mockReset()
+    apiKeyService.generateApiKey.mockImplementation(async ({ name }) => ({
+      id: name,
+      apiKey: name
+    }))
 
     requestBodyRuleService.validateAndNormalizeRules.mockReset()
     requestBodyRuleService.validateAndNormalizeRules.mockImplementation((rules) => ({
@@ -166,6 +177,35 @@ describe('admin api keys route payload rule updates', () => {
     })
 
     expect(res.status).not.toHaveBeenCalled()
+    expect(res.body.success).toBe(true)
+  })
+
+  test('passes the weekly reset schedule through batch creation', async () => {
+    const handler = findPostHandler('/api-keys/batch')
+    const res = createResponse()
+
+    await handler(
+      {
+        body: {
+          baseName: 'weekly-key',
+          count: 2,
+          weeklyResetDay: 4,
+          weeklyResetHour: 9,
+          serviceLimits: { codex: { weeklyCostLimit: 25 } }
+        }
+      },
+      res
+    )
+
+    expect(apiKeyService.generateApiKey).toHaveBeenCalledTimes(2)
+    expect(apiKeyService.generateApiKey).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        name: 'weekly-key_1',
+        weeklyResetDay: 4,
+        weeklyResetHour: 9
+      })
+    )
     expect(res.body.success).toBe(true)
   })
 })

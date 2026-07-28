@@ -187,6 +187,22 @@ describe('requestDetailHelper', () => {
     expect(meta.requestBody).toEqual(req.body)
   })
 
+  test('createRequestDetailMeta carries an immutable service window reservation', () => {
+    const req = {
+      body: { model: 'gpt-5' },
+      _serviceLimitReservations: {
+        codex: { service: 'codex', windowStart: 1774800000000 }
+      }
+    }
+
+    const meta = createRequestDetailMeta(req)
+    req._serviceLimitReservations.codex.windowStart = 1774800300000
+
+    expect(meta.serviceLimitReservations).toEqual({
+      codex: { service: 'codex', windowStart: 1774800000000 }
+    })
+  })
+
   test('finalizeRequestDetailMeta refreshes duration from requestStartedAt', () => {
     jest.useFakeTimers().setSystemTime(Date.parse('2026-04-09T05:00:00.500Z'))
 
