@@ -2020,7 +2020,8 @@ class RedisClient {
     service,
     windowMinutes,
     requestLimit = 0,
-    costLimit = 0
+    costLimit = 0,
+    incrementRequests = true
   ) {
     const windowStartKey = `rate_limit:window_start:${keyId}:${service}`
     const requestCountKeyPrefix = `rate_limit:requests:${keyId}:${service}`
@@ -2035,6 +2036,7 @@ class RedisClient {
       local requestLimit = tonumber(ARGV[3])
       local costLimit = tonumber(ARGV[4])
       local completedRequestRetention = tonumber(ARGV[5])
+      local incrementRequests = tonumber(ARGV[6])
       local windowStartValue = redis.call('GET', KEYS[1])
       local windowStart = tonumber(windowStartValue)
       local isNewWindow = not windowStart or now - windowStart >= duration
@@ -2066,14 +2068,16 @@ class RedisClient {
 
       local currentRequests = tonumber(redis.call('GET', requestCountKey)) or 0
       local currentCost = tonumber(redis.call('GET', costCountKey)) or 0
-      if requestLimit > 0 and currentRequests >= requestLimit then
+      if incrementRequests == 1 and requestLimit > 0 and currentRequests >= requestLimit then
         return {0, 'requests', windowStartValue, tostring(currentRequests), tostring(currentCost), requestCountKey, costCountKey}
       end
       if costLimit > 0 and currentCost >= costLimit then
         return {0, 'cost', windowStartValue, tostring(currentRequests), tostring(currentCost), requestCountKey, costCountKey}
       end
 
-      currentRequests = redis.call('INCR', requestCountKey)
+      if incrementRequests == 1 then
+        currentRequests = redis.call('INCR', requestCountKey)
+      end
       return {1, '', windowStartValue, tostring(currentRequests), tostring(currentCost), requestCountKey, costCountKey}
     `
 
@@ -2087,7 +2091,8 @@ class RedisClient {
       durationMs,
       requestLimit,
       costLimit,
-      completedRequestRetentionMs
+      completedRequestRetentionMs,
+      incrementRequests ? 1 : 0
     )
     const windowStart = Number(result[2])
 

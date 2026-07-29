@@ -16,7 +16,16 @@ class ServiceLimitService {
     return serviceRatesService.getServiceLimitFamily(model, accountType)
   }
 
-  async enforceForRequest(req, res, fallbackModel = '', fallbackAccountType = null) {
+  // options.countsAsRequest — set false for free, high-frequency side calls such as count_tokens.
+  // Cost limits still apply; only the window request counter is left alone, because clients like
+  // Claude Code issue many count_tokens calls per real request and would exhaust the quota early.
+  async enforceForRequest(
+    req,
+    res,
+    fallbackModel = '',
+    fallbackAccountType = null,
+    { countsAsRequest = true } = {}
+  ) {
     const serviceLimits = req?.apiKey?.serviceLimits || {}
     if (!serviceLimits || Object.keys(serviceLimits).length === 0) {
       return true
@@ -88,13 +97,19 @@ class ServiceLimitService {
     if (windowMinutes <= 0 || (requestLimit <= 0 && costLimit <= 0)) {
       return true
     }
+    if (!countsAsRequest && costLimit <= 0) {
+      // Nothing left to enforce for this call: it must not consume the request counter and the
+      // window has no cost limit to check.
+      return true
+    }
 
     const windowResult = await redis.checkAndIncrementServiceWindow(
       keyId,
       service,
       windowMinutes,
       requestLimit,
-      costLimit
+      costLimit,
+      countsAsRequest
     )
 
     if (!windowResult.allowed) {
@@ -106,7 +121,7 @@ class ServiceLimitService {
       logger.security(
         `Service window limit exceeded for key ${keyId} (${keyName}), service=${service}, reason=${windowResult.reason}`
       )
-      res.status(429).json({
+      return this._sendRejection(res, 429, {
         error: 'Rate limit exceeded',
         message: isRequestLimit
           ? `已达到 ${service} 服务请求次数限制 (${requestLimit} 次)，将在 ${remainingMinutes} 分钟后重置`
@@ -119,7 +134,6 @@ class ServiceLimitService {
         resetAt: windowResult.resetAt.toISOString(),
         remainingMinutes
       })
-      return false
     }
 
     if (!req._serviceLimitReservations) {
@@ -136,7 +150,7 @@ class ServiceLimitService {
 
   _sendCostLimitResponse(res, { service, currentCost, costLimit, resetAt, period }) {
     const isDaily = period === 'daily'
-    res.status(402).json({
+    return this._sendRejection(res, 402, {
       error: {
         type: 'insufficient_quota',
         message: `已达到 ${service} 服务${isDaily ? '每日' : '周'}费用限制 ($${costLimit})`,
@@ -147,6 +161,27 @@ class ServiceLimitService {
       costLimit,
       resetAt: resetAt.toISOString()
     })
+  }
+
+  // Always returns false so callers can `return this._sendRejection(...)`.
+  _sendRejection(res, status, body) {
+    // Streaming routes stage the SSE headers before this check runs, and Express only defaults
+    // Content-Type to application/json when it is still unset. Without clearing it the error body
+    // goes out labelled text/event-stream and SDKs parse it with a stream parser.
+    if (res.headersSent) {
+      // The response already started (e.g. concurrency-queue heartbeat on a stream), so a status
+      // line can no longer be sent. Close it instead of throwing ERR_HTTP_HEADERS_SENT.
+      logger.warn('Service limit rejected a request whose headers were already sent; ending it')
+      if (!res.destroyed && !res.finished) {
+        res.end()
+      }
+      return false
+    }
+
+    if (typeof res.removeHeader === 'function') {
+      res.removeHeader('Content-Type')
+    }
+    res.status(status).json(body)
     return false
   }
 }

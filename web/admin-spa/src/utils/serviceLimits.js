@@ -111,6 +111,50 @@ export function buildServiceLimitsPayload(serviceLimits, enabled) {
   return result
 }
 
+// 把已配置的服务限额压成一行行可直接渲染的短文本，供列表页展示。
+// 只反映配置，不含当前用量——按服务的用量计数器目前没有对外读取接口。
+export function summarizeServiceLimits(serviceLimits) {
+  const parsed = parseServiceLimits(serviceLimits)
+  const summary = []
+
+  for (const service of SERVICE_LIMIT_SERVICES) {
+    const row = parsed[service.key]
+    if (!row || typeof row !== 'object') {
+      continue
+    }
+
+    const windowMinutes = toPositiveNumber(row.windowMinutes)
+    const windowRequests = toPositiveNumber(row.windowRequests)
+    const windowCost = toPositiveNumber(row.windowCost)
+    const dailyCostLimit = toPositiveNumber(row.dailyCostLimit)
+    const weeklyCostLimit = toPositiveNumber(row.weeklyCostLimit)
+
+    const parts = []
+    if (windowMinutes > 0 && windowRequests > 0) {
+      parts.push(`${windowRequests} 次/${windowMinutes} 分钟`)
+    }
+    if (windowMinutes > 0 && windowCost > 0) {
+      parts.push(`$${windowCost}/${windowMinutes} 分钟`)
+    }
+    if (dailyCostLimit > 0) {
+      parts.push(`$${dailyCostLimit}/天`)
+    }
+    if (weeklyCostLimit > 0) {
+      parts.push(`$${weeklyCostLimit}/周`)
+    }
+
+    if (parts.length > 0) {
+      summary.push({ key: service.key, label: service.label, parts })
+    }
+  }
+
+  return summary
+}
+
+export function hasAnyServiceLimit(serviceLimits) {
+  return summarizeServiceLimits(serviceLimits).length > 0
+}
+
 export function hasWeeklyServiceCostLimit(serviceLimits, enabled = true) {
   if (!enabled || !serviceLimits || typeof serviceLimits !== 'object') {
     return false

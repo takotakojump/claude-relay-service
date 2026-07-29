@@ -3049,7 +3049,11 @@ async function handleAnthropicCountTokensToGemini(req, res, { vendor }) {
     return res.status(503).json(buildAnthropicError('Gemini OAuth account not found'))
   }
 
-  if (!(await serviceLimitService.enforceForRequest(req, res, model, accountType))) {
+  if (
+    !(await serviceLimitService.enforceForRequest(req, res, model, accountType, {
+      countsAsRequest: false
+    }))
+  ) {
     return undefined
   }
 

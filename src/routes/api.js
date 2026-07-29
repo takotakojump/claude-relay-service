@@ -1803,7 +1803,11 @@ router.post('/v1/messages/count_tokens', authenticateApiKey, async (req, res) =>
       }
     }
 
-    if (!(await serviceLimitService.enforceForRequest(req, res, requestedModel, accountType))) {
+    if (
+      !(await serviceLimitService.enforceForRequest(req, res, requestedModel, accountType, {
+        countsAsRequest: false
+      }))
+    ) {
       return { serviceLimitRejected: true }
     }
 

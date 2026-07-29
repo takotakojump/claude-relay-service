@@ -570,9 +570,11 @@ router.get('/claude-accounts/usage', authenticateAdmin, async (req, res) => {
             claudeUsage: claudeAccountService.buildClaudeUsageSnapshot(updatedAccount)
           }
         } catch (error) {
+          // Inconclusive failure (network / proxy / token refresh). Keep whatever snapshot we
+          // already have and leave claudeUsageUpdatedAt stale so the next load retries — clearing
+          // here would both blank the panel and mark the empty result fresh for the full TTL.
           logger.debug(`Failed to fetch OAuth usage for ${account.id}:`, error.message)
-          await claudeAccountService.clearClaudeUsageSnapshot(account.id).catch(() => {})
-          return { accountId: account.id, claudeUsage: null }
+          return { accountId: account.id, claudeUsage: cachedUsage || null }
         }
       }
       return { accountId: account.id, claudeUsage: null }

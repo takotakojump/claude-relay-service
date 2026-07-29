@@ -2150,12 +2150,14 @@ class ClaudeAccountService {
         return null
       }
 
-      // 其他错误正常记录
+      // Other failures are inconclusive: we never reached a verdict on this account's usage.
+      // Rethrow so callers can keep the previous snapshot instead of treating a network blip,
+      // a proxy outage or a failed token refresh as "this account reports no usage".
       logger.error(
         `❌ Failed to fetch OAuth usage for account ${accountId}:`,
         error.response?.data || error.message
       )
-      return null
+      throw error
     }
   }
 

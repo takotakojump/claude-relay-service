@@ -736,13 +736,32 @@
                               </div>
                             </div>
 
+                            <!-- 按服务的用量限制：仅展示配置，按服务的当前用量暂无读取接口 -->
+                            <div
+                              v-for="item in summarizeServiceLimits(key.serviceLimits)"
+                              :key="item.key"
+                              class="flex items-center gap-1.5 rounded-md bg-violet-50 px-2 py-1 dark:bg-violet-900/20"
+                              :title="`${item.label}：${item.parts.join('，')}`"
+                            >
+                              <i class="fas fa-layer-group text-[10px] text-violet-500" />
+                              <span
+                                class="text-[11px] font-medium text-violet-700 dark:text-violet-300"
+                              >
+                                {{ item.label }}
+                              </span>
+                              <span class="truncate text-[10px] text-gray-600 dark:text-gray-300">
+                                {{ item.parts.join('，') }}
+                              </span>
+                            </div>
+
                             <!-- 如果没有任何限制 -->
                             <div
                               v-if="
                                 !(key.weeklyOpusCostLimit > 0) &&
                                 !(key.dailyCostLimit > 0) &&
                                 !(key.totalCostLimit > 0) &&
-                                !(key.rateLimitWindow > 0 && key.rateLimitCost > 0)
+                                !(key.rateLimitWindow > 0 && key.rateLimitCost > 0) &&
+                                !hasAnyServiceLimit(key.serviceLimits)
                               "
                               class="flex items-center justify-center gap-1.5 py-2 text-gray-500 dark:text-gray-400"
                             >
@@ -1582,11 +1601,26 @@
 
                     <!-- 无限制显示 -->
                     <div
-                      v-else
+                      v-else-if="!hasAnyServiceLimit(key.serviceLimits)"
                       class="flex items-center justify-center gap-1.5 py-2 text-gray-500 dark:text-gray-400"
                     >
                       <i class="fas fa-infinity text-base" />
                       <span class="text-xs font-medium">无限制</span>
+                    </div>
+
+                    <!-- 按服务的用量限制：仅展示配置，按服务的当前用量暂无读取接口 -->
+                    <div
+                      v-for="item in summarizeServiceLimits(key.serviceLimits)"
+                      :key="item.key"
+                      class="flex items-center gap-1.5 rounded-md bg-violet-50 px-2 py-1 dark:bg-violet-900/20"
+                    >
+                      <i class="fas fa-layer-group text-xs text-violet-500" />
+                      <span class="text-xs font-medium text-violet-700 dark:text-violet-300">
+                        {{ item.label }}
+                      </span>
+                      <span class="text-xs text-gray-600 dark:text-gray-300">
+                        {{ item.parts.join('，') }}
+                      </span>
                     </div>
                   </template>
                 </div>
@@ -2183,6 +2217,7 @@ import ExpiryEditModal from '@/components/apikeys/ExpiryEditModal.vue'
 import UsageDetailModal from '@/components/apikeys/UsageDetailModal.vue'
 import TagManagementModal from '@/components/apikeys/TagManagementModal.vue'
 import LimitProgressBar from '@/components/apikeys/LimitProgressBar.vue'
+import { summarizeServiceLimits, hasAnyServiceLimit } from '@/utils/serviceLimits'
 import CustomDropdown from '@/components/common/CustomDropdown.vue'
 import ActionDropdown from '@/components/common/ActionDropdown.vue'
 import ConfirmModal from '@/components/common/ConfirmModal.vue'
@@ -4526,6 +4561,10 @@ const exportToExcel = () => {
           key.totalCostLimit === '0' || key.totalCostLimit === 0
             ? '无限制'
             : `$${key.totalCostLimit}` || '',
+        按服务限额:
+          summarizeServiceLimits(key.serviceLimits)
+            .map((item) => `${item.label}: ${item.parts.join('，')}`)
+            .join(' | ') || '无限制',
 
         // 账户绑定
         Claude专属账户: key.claudeAccountId || '',

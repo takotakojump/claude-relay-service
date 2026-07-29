@@ -1490,7 +1490,11 @@ async function handleCountTokens(req, res) {
       })
     }
 
-    if (!(await serviceLimitService.enforceForRequest(req, res, model, accountType))) {
+    if (
+      !(await serviceLimitService.enforceForRequest(req, res, model, accountType, {
+        countsAsRequest: false
+      }))
+    ) {
       return undefined
     }
 

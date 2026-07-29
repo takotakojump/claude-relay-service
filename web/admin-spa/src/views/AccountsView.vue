@@ -889,8 +889,14 @@
                 </td>
                 <td class="whitespace-nowrap px-3 py-4">
                   <div v-if="account.platform === 'claude'" class="space-y-2">
+                    <div
+                      v-if="!hasAnyClaudeUsage(account.claudeUsage)"
+                      class="text-xs text-gray-400 dark:text-gray-500"
+                    >
+                      暂无用量数据
+                    </div>
                     <!-- Claude 真实配额：5h、周限，以及上游可选的模型专属周限 -->
-                    <div class="space-y-2">
+                    <div v-else class="space-y-2">
                       <!-- 5小时窗口 -->
                       <div class="rounded-lg bg-gray-50 p-2 dark:bg-gray-700/70">
                         <div class="flex items-center gap-2">
@@ -1524,8 +1530,14 @@
           <div class="mb-3 space-y-2">
             <!-- 会话窗口 -->
             <div v-if="account.platform === 'claude'" class="space-y-2">
+              <div
+                v-if="!hasAnyClaudeUsage(account.claudeUsage)"
+                class="text-xs text-gray-400 dark:text-gray-500"
+              >
+                暂无用量数据
+              </div>
               <!-- Claude 真实配额：5h、周限，以及上游可选的模型专属周限 -->
-              <div class="space-y-2">
+              <div v-else class="space-y-2">
                 <!-- 5小时窗口 -->
                 <div class="rounded-lg bg-gray-50 p-2 dark:bg-gray-700/70">
                   <div class="flex items-center gap-2">
@@ -4642,6 +4654,17 @@ const hasClaudeUsageWindow = (window) => {
   return Boolean(
     window &&
       (window.utilization !== null && window.utilization !== undefined ? true : window.resetsAt)
+  )
+}
+
+// 上游没返回任何窗口时（Setup Token、或本次拉取失败）不要渲染空进度条——
+// 全是 "-" 的卡片比一行"暂无用量数据"更容易被误读成"用量为 0"。
+const hasAnyClaudeUsage = (claudeUsage) => {
+  return Boolean(
+    claudeUsage &&
+      (hasClaudeUsageWindow(claudeUsage.fiveHour) ||
+        hasClaudeUsageWindow(claudeUsage.sevenDay) ||
+        hasClaudeUsageWindow(claudeUsage.sevenDayOpus))
   )
 }
 

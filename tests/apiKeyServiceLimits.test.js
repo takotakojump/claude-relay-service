@@ -171,8 +171,38 @@ describe('per-service usage limit enforcement', () => {
     const allowed = await serviceLimitService.enforceForRequest(req, res, 'claude-opus-4-8')
 
     expect(allowed).toBe(true)
-    expect(mockCheckAndIncrementServiceWindow).toHaveBeenCalledWith(KEY_ID, 'claude', 5, 5, 0)
+    expect(mockCheckAndIncrementServiceWindow).toHaveBeenCalledWith(KEY_ID, 'claude', 5, 5, 0, true)
     expect(req._serviceLimitReservations.claude.windowStart).toEqual(expect.any(Number))
+  })
+
+  it('does not touch the window request counter for count_tokens-style calls', async () => {
+    const req = makeReq({ claude: { windowMinutes: 5, windowRequests: 5 } })
+
+    // 只配了请求数限制时，不计数的调用无需查询窗口
+    expect(
+      await serviceLimitService.enforceForRequest(req, makeRes(), 'claude-opus-4-8', null, {
+        countsAsRequest: false
+      })
+    ).toBe(true)
+    expect(mockCheckAndIncrementServiceWindow).not.toHaveBeenCalled()
+  })
+
+  it('still applies the window cost limit to count_tokens-style calls', async () => {
+    const req = makeReq({ claude: { windowMinutes: 5, windowCost: 10 } })
+
+    expect(
+      await serviceLimitService.enforceForRequest(req, makeRes(), 'claude-opus-4-8', null, {
+        countsAsRequest: false
+      })
+    ).toBe(true)
+    expect(mockCheckAndIncrementServiceWindow).toHaveBeenCalledWith(
+      KEY_ID,
+      'claude',
+      5,
+      0,
+      10,
+      false
+    )
   })
 
   it('reuses the request reservation during internal retries', async () => {
