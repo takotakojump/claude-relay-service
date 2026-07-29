@@ -73,14 +73,14 @@ describe('recordServiceCost', () => {
     expect(mockIncrementServiceDailyCost).toHaveBeenCalledWith('key-1', 'codex', 2)
   })
 
-  it('does not move Claude usage into the CCR bucket when CCR handled the request', async () => {
+  it('records against the upstream channel that served the request, not the model family', async () => {
     mockGetApiKey.mockResolvedValue({
-      serviceLimits: JSON.stringify({ claude: { dailyCostLimit: 10 } })
+      serviceLimits: JSON.stringify({ ccr: { dailyCostLimit: 10 } })
     })
 
     await apiKeyService.recordServiceCost('key-1', 2, 2, 'claude-opus-4-8', 'ccr')
 
-    expect(mockIncrementServiceDailyCost).toHaveBeenCalledWith('key-1', 'claude', 2)
+    expect(mockIncrementServiceDailyCost).toHaveBeenCalledWith('key-1', 'ccr', 2)
   })
 
   it('increments the active service window cost when configured', async () => {

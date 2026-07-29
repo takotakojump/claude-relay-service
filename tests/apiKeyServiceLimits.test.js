@@ -121,20 +121,28 @@ describe('per-service usage limit enforcement', () => {
     expect(mockGetServiceDailyCost).toHaveBeenCalledWith(KEY_ID, 'codex')
   })
 
-  it('falls back to CCR only when the model itself is unknown', async () => {
-    const req = makeReq({ ccr: { dailyCostLimit: 5 } }, 'vendor-model-v1')
+  it('buckets by the upstream channel even when the model belongs to another family', async () => {
+    const req = makeReq({ ccr: { dailyCostLimit: 5 } }, 'claude-opus-4-8')
 
     expect(await serviceLimitService.enforceForRequest(req, makeRes(), '', 'ccr')).toBe(true)
     expect(mockGetServiceDailyCost).toHaveBeenCalledWith(KEY_ID, 'ccr')
   })
 
-  it('rejects an unclassified model instead of charging Claude', async () => {
+  it('falls back to the model family when the account type is unmapped', async () => {
+    const req = makeReq({ claude: { dailyCostLimit: 5 } }, 'claude-opus-4-8')
+
+    expect(await serviceLimitService.enforceForRequest(req, makeRes(), '', 'something-new')).toBe(
+      true
+    )
+    expect(mockGetServiceDailyCost).toHaveBeenCalledWith(KEY_ID, 'claude')
+  })
+
+  it('fails open when neither the account type nor the model can be classified', async () => {
     const req = makeReq({ claude: { dailyCostLimit: 5 } }, 'vendor-model-v1')
     const res = makeRes()
 
-    expect(await serviceLimitService.enforceForRequest(req, res)).toBe(false)
-    expect(res.status).toHaveBeenCalledWith(400)
-    expect(res.body.error.code).toBe('unsupported_model_family')
+    expect(await serviceLimitService.enforceForRequest(req, res)).toBe(true)
+    expect(res.status).not.toHaveBeenCalled()
     expect(mockGetServiceDailyCost).not.toHaveBeenCalled()
   })
 

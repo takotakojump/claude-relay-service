@@ -25,17 +25,13 @@ class ServiceLimitService {
     const model = getRequestModel(req, fallbackModel)
     const service = this.resolveModelFamily(model, fallbackAccountType)
     if (!service) {
+      // Fail open: an unclassifiable request is not evidence that a limit was exceeded, and the
+      // classifier is substring-based, so rejecting here would turn every unrecognised model name
+      // into an outage for any key that has limits configured.
       logger.warn(
-        `Unable to resolve service-limit family for key ${req.apiKey.id}, model=${model || 'empty'}, accountType=${fallbackAccountType || 'empty'}`
+        `Skipping service limits for unclassified request: key ${req.apiKey.id}, model=${model || 'empty'}, accountType=${fallbackAccountType || 'empty'}`
       )
-      res.status(400).json({
-        error: {
-          type: 'invalid_request_error',
-          code: 'unsupported_model_family',
-          message: `Unable to determine a quota family for model "${model || 'unknown'}"`
-        }
-      })
-      return false
+      return true
     }
 
     const limits = serviceLimits[service]

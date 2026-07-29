@@ -249,11 +249,14 @@ class ServiceRatesService {
   }
 
   /**
-   * Resolve the quota bucket without silently assigning unknown models to Claude.
-   * The requested model wins; account type is only a fallback for unclassified models.
+   * Resolve the quota bucket for per-service usage limits.
+   * The upstream channel wins, matching how getService() buckets billing rates, so the same
+   * seven service names mean the same thing in both features. The model name is only a
+   * fallback for requests whose account type is unknown or unmapped.
+   * Returns null when neither is classifiable — callers decide how to handle that.
    */
   getServiceLimitFamily(model, accountType = null) {
-    return this.getServiceFamilyFromModel(model) || this.getServiceFromAccountType(accountType)
+    return this.getServiceFromAccountType(accountType) || this.getServiceFamilyFromModel(model)
   }
 
   /**
