@@ -23,8 +23,6 @@ describe('redis api key parsing', () => {
     const parsed = redis._parseApiKeyData({
       enableOpenAIResponsesCodexAdaptation: 'false',
       enableOpenAIResponsesPayloadRules: 'true',
-      enableOpenAIResponsesCodexOriginator: 'true',
-      enableOpenAIResponsesCodexUserAgent: 'true',
       openaiResponsesPayloadRules: JSON.stringify([
         { path: 'model', valueType: 'string', value: 'gpt-5' }
       ])
@@ -32,8 +30,6 @@ describe('redis api key parsing', () => {
 
     expect(parsed.enableOpenAIResponsesCodexAdaptation).toBe(false)
     expect(parsed.enableOpenAIResponsesPayloadRules).toBe(true)
-    expect(parsed.enableOpenAIResponsesCodexOriginator).toBe(true)
-    expect(parsed.enableOpenAIResponsesCodexUserAgent).toBe(true)
     expect(parsed.openaiResponsesPayloadRules).toEqual([
       { path: 'model', valueType: 'string', value: 'gpt-5' }
     ])
@@ -44,8 +40,6 @@ describe('redis api key parsing', () => {
 
     expect(parsed.enableOpenAIResponsesCodexAdaptation).toBe(true)
     expect(parsed.enableOpenAIResponsesPayloadRules).toBe(false)
-    expect(parsed.enableOpenAIResponsesCodexOriginator).toBe(false)
-    expect(parsed.enableOpenAIResponsesCodexUserAgent).toBe(false)
     expect(parsed.openaiResponsesPayloadRules).toEqual([])
   })
 })

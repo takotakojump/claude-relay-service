@@ -13,6 +13,7 @@ const redis = require('../src/models/redis')
 const apiKeyService = require('../src/services/apiKeyService')
 const claudeAccountService = require('../src/services/account/claudeAccountService')
 const bedrockAccountService = require('../src/services/account/bedrockAccountService')
+const codexClientIdentityService = require('../src/services/codexClientIdentityService')
 
 const program = new Command()
 
@@ -1006,6 +1007,94 @@ async function deleteBedrockAccount() {
     console.error(styles.error(error.message))
   }
 }
+
+// 🪪 Codex 客户端身份
+program
+  .command('codex-identity')
+  .description('查看/应用出站请求使用的 Codex 客户端身份')
+  .action(async () => {
+    await initialize()
+
+    const spinner = ora('正在读取 Codex 客户端身份...').start()
+
+    try {
+      const [applied, observed] = await Promise.all([
+        codexClientIdentityService.getApplied(),
+        codexClientIdentityService.listObserved()
+      ])
+      spinner.succeed('读取成功')
+
+      console.log(styles.title('\n🪪 当前生效的固定身份\n'))
+      console.log(`originator: ${styles.success(applied.originator)}`)
+      console.log(`user-agent: ${styles.success(applied.userAgent)}`)
+      console.log(`version:    ${styles.success(applied.version)}`)
+      if (applied.appliedAt) {
+        console.log(styles.dim(`应用于 ${applied.appliedAt}，操作者 ${applied.appliedBy}`))
+      } else {
+        console.log(styles.dim('（尚未应用过，当前使用内置兜底值）'))
+      }
+
+      if (observed.length === 0) {
+        console.log(
+          styles.warning('\n⚠️ 还没有采样到任何 Codex 客户端身份，先让 Codex CLI 发起一次请求\n')
+        )
+        await redis.disconnect()
+        return
+      }
+
+      console.log(styles.title('\n📡 观测到的客户端身份（版本降序）\n'))
+      console.log(
+        table([
+          ['originator', 'user-agent', '版本', '次数', '最后出现'],
+          ...observed.map((item) => [
+            item.originator,
+            item.userAgent,
+            item.version,
+            String(item.count),
+            item.lastSeen ? item.lastSeen.replace('T', ' ').slice(0, 19) : '-'
+          ])
+        ])
+      )
+
+      const { choice } = await inquirer.prompt([
+        {
+          type: 'list',
+          name: 'choice',
+          message: '应用哪一条为固定身份？',
+          choices: [
+            ...observed.map((item, index) => ({
+              name: `${item.userAgent}  (${item.count} 次, 最后出现 ${
+                item.lastSeen ? item.lastSeen.replace('T', ' ').slice(0, 16) : '-'
+              })`,
+              value: index
+            })),
+            { name: '取消', value: -1 }
+          ]
+        }
+      ])
+      if (choice === -1) {
+        console.log(styles.dim('已取消'))
+        await redis.disconnect()
+        return
+      }
+      const target = observed[choice]
+
+      if (target.originator === applied.originator && target.userAgent === applied.userAgent) {
+        console.log(styles.info('\n当前固定值已经是这一条，无需变更\n'))
+        await redis.disconnect()
+        return
+      }
+
+      const applySpinner = ora('正在应用...').start()
+      const result = await codexClientIdentityService.apply(target, 'cli')
+      applySpinner.succeed(`已应用：${result.originator} / ${result.userAgent}`)
+    } catch (error) {
+      spinner.fail('操作失败')
+      console.error(styles.error(error.message))
+    }
+
+    await redis.disconnect()
+  })
 
 // 程序信息
 program.name('claude-relay-cli').description('Claude Relay Service 命令行管理工具').version('1.0.0')

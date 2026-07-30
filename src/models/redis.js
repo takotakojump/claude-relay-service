@@ -788,8 +788,6 @@ class RedisClient {
       'enableClientRestriction',
       'enableOpenAIResponsesCodexAdaptation',
       'enableOpenAIResponsesPayloadRules',
-      'enableOpenAIResponsesCodexOriginator',
-      'enableOpenAIResponsesCodexUserAgent',
       'isDeleted'
     ]
     for (const field of boolFields) {
@@ -803,12 +801,6 @@ class RedisClient {
     }
     if (parsed.enableOpenAIResponsesPayloadRules === undefined) {
       parsed.enableOpenAIResponsesPayloadRules = false
-    }
-    if (parsed.enableOpenAIResponsesCodexOriginator === undefined) {
-      parsed.enableOpenAIResponsesCodexOriginator = false
-    }
-    if (parsed.enableOpenAIResponsesCodexUserAgent === undefined) {
-      parsed.enableOpenAIResponsesCodexUserAgent = false
     }
 
     // 数字字段

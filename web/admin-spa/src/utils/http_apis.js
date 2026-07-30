@@ -345,6 +345,12 @@ export const getClaudeRelayConfigApi = (config) =>
 export const updateClaudeRelayConfigApi = (data, config) =>
   request({ url: '/admin/claude-relay-config', method: 'PUT', data, ...config })
 
+// Codex 客户端身份
+export const getCodexClientIdentityApi = (config) =>
+  request({ url: '/admin/codex-client-identity', method: 'GET', ...config })
+export const applyCodexClientIdentityApi = (data, config) =>
+  request({ url: '/admin/codex-client-identity/apply', method: 'POST', data, ...config })
+
 // 服务倍率配置（管理端）
 export const getAdminServiceRatesApi = (config) =>
   request({ url: '/admin/service-rates', method: 'GET', ...config })

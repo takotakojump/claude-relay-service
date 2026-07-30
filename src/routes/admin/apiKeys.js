@@ -1501,8 +1501,6 @@ router.post('/api-keys', authenticateAdmin, async (req, res) => {
       weeklyResetHour, // 周费用重置时 (0-23)
       enableOpenAIResponsesCodexAdaptation,
       enableOpenAIResponsesPayloadRules,
-      enableOpenAIResponsesCodexOriginator,
-      enableOpenAIResponsesCodexUserAgent,
       openaiResponsesPayloadRules
     } = req.body
 
@@ -1658,24 +1656,6 @@ router.post('/api-keys', authenticateAdmin, async (req, res) => {
       return res.status(400).json({ error: 'enableOpenAIResponsesPayloadRules must be a boolean' })
     }
 
-    if (
-      enableOpenAIResponsesCodexOriginator !== undefined &&
-      typeof enableOpenAIResponsesCodexOriginator !== 'boolean'
-    ) {
-      return res
-        .status(400)
-        .json({ error: 'enableOpenAIResponsesCodexOriginator must be a boolean' })
-    }
-
-    if (
-      enableOpenAIResponsesCodexUserAgent !== undefined &&
-      typeof enableOpenAIResponsesCodexUserAgent !== 'boolean'
-    ) {
-      return res
-        .status(400)
-        .json({ error: 'enableOpenAIResponsesCodexUserAgent must be a boolean' })
-    }
-
     const payloadRulesValidation = requestBodyRuleService.validateAndNormalizeRules(
       openaiResponsesPayloadRules
     )
@@ -1745,14 +1725,6 @@ router.post('/api-keys', authenticateAdmin, async (req, res) => {
           : true,
       enableOpenAIResponsesPayloadRules:
         enableOpenAIResponsesPayloadRules !== undefined ? enableOpenAIResponsesPayloadRules : false,
-      enableOpenAIResponsesCodexOriginator:
-        enableOpenAIResponsesCodexOriginator !== undefined
-          ? enableOpenAIResponsesCodexOriginator
-          : false,
-      enableOpenAIResponsesCodexUserAgent:
-        enableOpenAIResponsesCodexUserAgent !== undefined
-          ? enableOpenAIResponsesCodexUserAgent
-          : false,
       openaiResponsesPayloadRules: payloadRulesValidation.rules
     })
 
@@ -2221,8 +2193,6 @@ router.put('/api-keys/:keyId', authenticateAdmin, async (req, res) => {
       weeklyResetHour, // 周费用重置时 (0-23)
       enableOpenAIResponsesCodexAdaptation,
       enableOpenAIResponsesPayloadRules,
-      enableOpenAIResponsesCodexOriginator,
-      enableOpenAIResponsesCodexUserAgent,
       openaiResponsesPayloadRules
     } = req.body
 
@@ -2455,24 +2425,6 @@ router.put('/api-keys/:keyId', authenticateAdmin, async (req, res) => {
           .json({ error: 'enableOpenAIResponsesPayloadRules must be a boolean' })
       }
       updates.enableOpenAIResponsesPayloadRules = enableOpenAIResponsesPayloadRules
-    }
-
-    if (enableOpenAIResponsesCodexOriginator !== undefined) {
-      if (typeof enableOpenAIResponsesCodexOriginator !== 'boolean') {
-        return res
-          .status(400)
-          .json({ error: 'enableOpenAIResponsesCodexOriginator must be a boolean' })
-      }
-      updates.enableOpenAIResponsesCodexOriginator = enableOpenAIResponsesCodexOriginator
-    }
-
-    if (enableOpenAIResponsesCodexUserAgent !== undefined) {
-      if (typeof enableOpenAIResponsesCodexUserAgent !== 'boolean') {
-        return res
-          .status(400)
-          .json({ error: 'enableOpenAIResponsesCodexUserAgent must be a boolean' })
-      }
-      updates.enableOpenAIResponsesCodexUserAgent = enableOpenAIResponsesCodexUserAgent
     }
 
     if (openaiResponsesPayloadRules !== undefined) {

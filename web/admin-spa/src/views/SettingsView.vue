@@ -72,6 +72,18 @@
             <i class="fas fa-coins mr-2"></i>
             模型价格
           </button>
+          <button
+            :class="[
+              'border-b-2 pb-2 text-sm font-medium transition-colors',
+              activeSection === 'codexIdentity'
+                ? 'border-blue-500 text-blue-600 dark:border-blue-400 dark:text-blue-400'
+                : 'border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-300'
+            ]"
+            @click="activeSection = 'codexIdentity'"
+          >
+            <i class="fas fa-id-badge mr-2"></i>
+            Codex 身份
+          </button>
         </nav>
       </div>
 
@@ -1380,6 +1392,11 @@
         <div v-show="activeSection === 'modelPricing'">
           <ModelPricingSection />
         </div>
+
+        <!-- Codex 客户端身份 -->
+        <div v-show="activeSection === 'codexIdentity'">
+          <CodexIdentitySection />
+        </div>
       </div>
     </div>
   </div>
@@ -1982,6 +1999,7 @@ import { useSettingsStore } from '@/stores/settings'
 import * as httpApis from '@/utils/http_apis'
 import ConfirmModal from '@/components/common/ConfirmModal.vue'
 import ModelPricingSection from '@/components/settings/ModelPricingSection.vue'
+import CodexIdentitySection from '@/components/settings/CodexIdentitySection.vue'
 
 // 定义组件名称，用于keep-alive排除
 defineOptions({

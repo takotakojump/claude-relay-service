@@ -88,14 +88,10 @@ describe('apiKeyService openai responses config', () => {
 
     expect(storedKeyData.enableOpenAIResponsesCodexAdaptation).toBe('true')
     expect(storedKeyData.enableOpenAIResponsesPayloadRules).toBe('false')
-    expect(storedKeyData.enableOpenAIResponsesCodexOriginator).toBe('false')
-    expect(storedKeyData.enableOpenAIResponsesCodexUserAgent).toBe('false')
     expect(storedKeyData.openaiResponsesPayloadRules).toBe('[]')
 
     expect(result.enableOpenAIResponsesCodexAdaptation).toBe(true)
     expect(result.enableOpenAIResponsesPayloadRules).toBe(false)
-    expect(result.enableOpenAIResponsesCodexOriginator).toBe(false)
-    expect(result.enableOpenAIResponsesCodexUserAgent).toBe(false)
     expect(result.openaiResponsesPayloadRules).toEqual([])
   })
 
@@ -112,16 +108,12 @@ describe('apiKeyService openai responses config', () => {
     await apiKeyService.updateApiKey('key-1', {
       enableOpenAIResponsesCodexAdaptation: false,
       enableOpenAIResponsesPayloadRules: true,
-      enableOpenAIResponsesCodexOriginator: true,
-      enableOpenAIResponsesCodexUserAgent: true,
       openaiResponsesPayloadRules: [{ path: 'model', valueType: 'string', value: 'gpt-5' }]
     })
 
     const [, storedKeyData] = redis.setApiKey.mock.calls[0]
     expect(storedKeyData.enableOpenAIResponsesCodexAdaptation).toBe('false')
     expect(storedKeyData.enableOpenAIResponsesPayloadRules).toBe('true')
-    expect(storedKeyData.enableOpenAIResponsesCodexOriginator).toBe('true')
-    expect(storedKeyData.enableOpenAIResponsesCodexUserAgent).toBe('true')
     expect(storedKeyData.openaiResponsesPayloadRules).toBe(
       JSON.stringify([{ path: 'model', valueType: 'string', value: 'gpt-5' }])
     )
@@ -153,8 +145,6 @@ describe('apiKeyService openai responses config', () => {
       ccrAccountId: '',
       enableOpenAIResponsesCodexAdaptation: 'false',
       enableOpenAIResponsesPayloadRules: 'true',
-      enableOpenAIResponsesCodexOriginator: 'true',
-      enableOpenAIResponsesCodexUserAgent: 'true',
       openaiResponsesPayloadRules: JSON.stringify([
         { path: 'model', valueType: 'string', value: 'gpt-5' }
       ])
@@ -164,8 +154,6 @@ describe('apiKeyService openai responses config', () => {
 
     expect(result.enableOpenAIResponsesCodexAdaptation).toBe(false)
     expect(result.enableOpenAIResponsesPayloadRules).toBe(true)
-    expect(result.enableOpenAIResponsesCodexOriginator).toBe(true)
-    expect(result.enableOpenAIResponsesCodexUserAgent).toBe(true)
     expect(result.openaiResponsesPayloadRules).toEqual([
       { path: 'model', valueType: 'string', value: 'gpt-5' }
     ])

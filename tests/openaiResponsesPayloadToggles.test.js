@@ -96,12 +96,18 @@ jest.mock('../src/utils/requestDetailHelper', () => ({
   extractOpenAICacheReadTokens: jest.fn(() => 0)
 }))
 
+jest.mock('../src/services/codexClientIdentityService', () => ({
+  getApplied: jest.fn(),
+  recordObserved: jest.fn(() => Promise.resolve())
+}))
+
 const unifiedOpenAIScheduler = require('../src/services/scheduler/unifiedOpenAIScheduler')
 const axios = require('axios')
 const apiKeyService = require('../src/services/apiKeyService')
 const openaiAccountService = require('../src/services/account/openaiAccountService')
 const openaiResponsesAccountService = require('../src/services/account/openaiResponsesAccountService')
 const openaiResponsesRelayService = require('../src/services/relay/openaiResponsesRelayService')
+const codexClientIdentityService = require('../src/services/codexClientIdentityService')
 const openaiRoutes = require('../src/routes/openaiRoutes')
 
 function createHash(value) {
@@ -178,6 +184,11 @@ describe('openai responses payload toggles', () => {
 
     openaiResponsesRelayService.handleRequest.mockResolvedValue({ ok: true })
     openaiAccountService.decrypt.mockReturnValue('decrypted-token')
+    codexClientIdentityService.getApplied.mockResolvedValue({
+      originator: 'codex_cli_rs',
+      userAgent: 'codex_cli_rs/0.146.0',
+      version: '0.146.0'
+    })
   })
 
   test('keeps standard responses payload unchanged for openai-responses when both toggles are off', async () => {
@@ -551,8 +562,19 @@ describe('openai responses payload toggles', () => {
 
 describe('openai responses codex client identity headers', () => {
   const CODEX_UA = 'codex_cli_rs/0.150.0 (x86_64-unknown-linux-gnu)'
+  const PINNED = {
+    originator: 'codex_cli_rs',
+    userAgent: 'codex_cli_rs/0.146.0',
+    version: '0.146.0'
+  }
 
-  function mockOpenAIAccount() {
+  function sentHeaders() {
+    return axios.post.mock.calls[0][2].headers
+  }
+
+  beforeEach(() => {
+    jest.clearAllMocks()
+
     unifiedOpenAIScheduler.selectAccountForApiKey.mockResolvedValue({
       accountId: 'openai-1',
       accountType: 'openai'
@@ -563,147 +585,95 @@ describe('openai responses codex client identity headers', () => {
       accessToken: 'encrypted-token',
       accountId: 'chatgpt-account-1'
     })
+    openaiAccountService.decrypt.mockReturnValue('decrypted-token')
     axios.post.mockResolvedValue({
       status: 200,
       data: { model: 'gpt-5.6-sol', usage: {} },
       headers: {}
     })
-  }
-
-  function sentHeaders() {
-    return axios.post.mock.calls[0][2].headers
-  }
-
-  beforeEach(() => {
-    jest.clearAllMocks()
-    openaiAccountService.decrypt.mockReturnValue('decrypted-token')
-    mockOpenAIAccount()
+    codexClientIdentityService.getApplied.mockResolvedValue(PINNED)
   })
 
-  function codexReq(overrides, label) {
+  function codexReq(label) {
     const req = createReq({
       userAgent: CODEX_UA,
       body: { model: 'gpt-5.6-sol', prompt_cache_key: label, stream: false },
-      apiKeyOverrides: {
-        enableOpenAIResponsesCodexAdaptation: false,
-        ...overrides
-      }
+      apiKeyOverrides: { enableOpenAIResponsesCodexAdaptation: false }
     })
     req.headers['originator'] = 'codex_cli_rs'
     req.headers['version'] = '0.150.0'
     return req
   }
 
-  test('sends neither header when both toggles are off', async () => {
-    await openaiRoutes.handleResponses(
-      codexReq(
-        {
-          enableOpenAIResponsesCodexOriginator: false,
-          enableOpenAIResponsesCodexUserAgent: false
-        },
-        'both-off'
-      ),
-      createRes()
-    )
+  test('sends the pinned identity instead of forwarding the client one', async () => {
+    await openaiRoutes.handleResponses(codexReq('pinned'), createRes())
 
     const headers = sentHeaders()
-    expect(headers['originator']).toBeUndefined()
-    expect(headers['user-agent']).toBeUndefined()
-    // version 一直在白名单内透传，不受这两个开关影响
-    expect(headers['version']).toBe('0.150.0')
+    expect(headers['originator']).toBe(PINNED.originator)
+    expect(headers['user-agent']).toBe(PINNED.userAgent)
+    // version 同步覆盖，保持与固定 UA 内嵌版本一致
+    expect(headers['version']).toBe(PINNED.version)
+    // 客户端真实身份不再出现在出站请求里
+    expect(headers['user-agent']).not.toBe(CODEX_UA)
   })
 
-  test('sends only originator when only that toggle is on', async () => {
-    await openaiRoutes.handleResponses(
-      codexReq(
-        {
-          enableOpenAIResponsesCodexOriginator: true,
-          enableOpenAIResponsesCodexUserAgent: false
-        },
-        'originator-only'
-      ),
-      createRes()
-    )
+  test('records the real inbound client identity before overwriting it', async () => {
+    await openaiRoutes.handleResponses(codexReq('recorded'), createRes())
 
-    const headers = sentHeaders()
-    expect(headers['originator']).toBe('codex_cli_rs')
-    expect(headers['user-agent']).toBeUndefined()
+    expect(codexClientIdentityService.recordObserved).toHaveBeenCalledWith('codex_cli_rs', CODEX_UA)
   })
 
-  test('sends only user-agent when only that toggle is on', async () => {
-    await openaiRoutes.handleResponses(
-      codexReq(
-        {
-          enableOpenAIResponsesCodexOriginator: false,
-          enableOpenAIResponsesCodexUserAgent: true
-        },
-        'ua-only'
-      ),
-      createRes()
-    )
-
-    const headers = sentHeaders()
-    expect(headers['originator']).toBeUndefined()
-    expect(headers['user-agent']).toBe(CODEX_UA)
-  })
-
-  test('forwards the real client identity for Codex CLI when both toggles are on', async () => {
-    await openaiRoutes.handleResponses(
-      codexReq(
-        {
-          enableOpenAIResponsesCodexOriginator: true,
-          enableOpenAIResponsesCodexUserAgent: true
-        },
-        'both-on'
-      ),
-      createRes()
-    )
-
-    const headers = sentHeaders()
-    expect(headers['originator']).toBe('codex_cli_rs')
-    expect(headers['user-agent']).toBe(CODEX_UA)
-    expect(headers['version']).toBe('0.150.0')
-  })
-
-  test('injects the standard identity for non-Codex clients when both toggles are on', async () => {
+  test('sends the pinned identity for non-Codex clients too', async () => {
     const req = createReq({
       userAgent: 'python-requests/2.31.0',
-      body: { model: 'gpt-5.6-sol', prompt_cache_key: 'headers-inject', stream: false },
-      apiKeyOverrides: {
-        enableOpenAIResponsesCodexAdaptation: false,
-        enableOpenAIResponsesCodexOriginator: true,
-        enableOpenAIResponsesCodexUserAgent: true
-      }
+      body: { model: 'gpt-5.6-sol', prompt_cache_key: 'non-codex', stream: false },
+      apiKeyOverrides: { enableOpenAIResponsesCodexAdaptation: false }
     })
     req.headers['version'] = '9.9.9'
 
     await openaiRoutes.handleResponses(req, createRes())
 
     const headers = sentHeaders()
-    expect(headers['originator']).toBe('codex_cli_rs')
-    expect(headers['user-agent']).toBe('codex_cli_rs/0.144.5')
-    // 注入 UA 时同步覆盖 version，避免错配
-    expect(headers['version']).toBe('0.144.5')
+    expect(headers['originator']).toBe(PINNED.originator)
+    expect(headers['user-agent']).toBe(PINNED.userAgent)
+    expect(headers['version']).toBe(PINNED.version)
   })
 
-  test('leaves version untouched when injecting originator alone for a non-Codex client', async () => {
-    const req = createReq({
-      userAgent: 'python-requests/2.31.0',
-      body: { model: 'gpt-5.6-sol', prompt_cache_key: 'inject-originator-only', stream: false },
-      apiKeyOverrides: {
-        enableOpenAIResponsesCodexAdaptation: false,
-        enableOpenAIResponsesCodexOriginator: true,
-        enableOpenAIResponsesCodexUserAgent: false
-      }
+  test('reflects a newly applied identity', async () => {
+    codexClientIdentityService.getApplied.mockResolvedValue({
+      originator: 'codex_cli_rs',
+      userAgent: 'codex_cli_rs/0.152.0 (linux)',
+      version: '0.152.0'
     })
-    req.headers['version'] = '9.9.9'
+
+    await openaiRoutes.handleResponses(codexReq('reapplied'), createRes())
+
+    const headers = sentHeaders()
+    expect(headers['user-agent']).toBe('codex_cli_rs/0.152.0 (linux)')
+    expect(headers['version']).toBe('0.152.0')
+  })
+
+  test('also pins the identity on the compact route', async () => {
+    const req = createReq({
+      path: '/v1/responses/compact',
+      userAgent: CODEX_UA,
+      body: { model: 'gpt-5.6-sol', prompt_cache_key: 'compact-identity', stream: false }
+    })
+    req.headers['originator'] = 'codex_cli_rs'
 
     await openaiRoutes.handleResponses(req, createRes())
 
     const headers = sentHeaders()
-    expect(headers['originator']).toBe('codex_cli_rs')
-    expect(headers['user-agent']).toBeUndefined()
-    // 没有注入 UA，就没有错配问题，version 保持客户端原值
-    expect(headers['version']).toBe('9.9.9')
+    expect(headers['originator']).toBe(PINNED.originator)
+    expect(headers['user-agent']).toBe(PINNED.userAgent)
+  })
+
+  test('a failing recordObserved never breaks the request', async () => {
+    codexClientIdentityService.recordObserved.mockRejectedValue(new Error('redis down'))
+
+    await openaiRoutes.handleResponses(codexReq('record-fails'), createRes())
+
+    expect(axios.post).toHaveBeenCalled()
+    expect(sentHeaders()['user-agent']).toBe(PINNED.userAgent)
   })
 })

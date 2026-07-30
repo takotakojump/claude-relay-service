@@ -209,8 +209,6 @@ class ApiKeyService {
       weeklyResetHour = 0, // 周费用重置时 (0-23)
       enableOpenAIResponsesCodexAdaptation = true,
       enableOpenAIResponsesPayloadRules = false,
-      enableOpenAIResponsesCodexOriginator = false,
-      enableOpenAIResponsesCodexUserAgent = false,
       openaiResponsesPayloadRules = []
     } = options
 
@@ -276,8 +274,6 @@ class ApiKeyService {
       weeklyResetHour: String(weeklyResetHour || 0), // 周费用重置时 (0-23)
       enableOpenAIResponsesCodexAdaptation: String(enableOpenAIResponsesCodexAdaptation !== false),
       enableOpenAIResponsesPayloadRules: String(enableOpenAIResponsesPayloadRules === true),
-      enableOpenAIResponsesCodexOriginator: String(enableOpenAIResponsesCodexOriginator === true),
-      enableOpenAIResponsesCodexUserAgent: String(enableOpenAIResponsesCodexUserAgent === true),
       openaiResponsesPayloadRules: JSON.stringify(payloadRulesValidation.rules)
     }
 
@@ -355,14 +351,6 @@ class ApiKeyService {
       ),
       enableOpenAIResponsesPayloadRules: parseBooleanWithDefault(
         keyData.enableOpenAIResponsesPayloadRules,
-        false
-      ),
-      enableOpenAIResponsesCodexOriginator: parseBooleanWithDefault(
-        keyData.enableOpenAIResponsesCodexOriginator,
-        false
-      ),
-      enableOpenAIResponsesCodexUserAgent: parseBooleanWithDefault(
-        keyData.enableOpenAIResponsesCodexUserAgent,
         false
       ),
       openaiResponsesPayloadRules: parseOpenAIResponsesPayloadRules(
@@ -530,14 +518,6 @@ class ApiKeyService {
         keyData.enableOpenAIResponsesPayloadRules,
         false
       )
-      const enableOpenAIResponsesCodexOriginator = parseBooleanWithDefault(
-        keyData.enableOpenAIResponsesCodexOriginator,
-        false
-      )
-      const enableOpenAIResponsesCodexUserAgent = parseBooleanWithDefault(
-        keyData.enableOpenAIResponsesCodexUserAgent,
-        false
-      )
 
       return {
         valid: true,
@@ -579,8 +559,6 @@ class ApiKeyService {
           serviceLimits,
           enableOpenAIResponsesCodexAdaptation,
           enableOpenAIResponsesPayloadRules,
-          enableOpenAIResponsesCodexOriginator,
-          enableOpenAIResponsesCodexUserAgent,
           openaiResponsesPayloadRules
         }
       }
@@ -683,14 +661,6 @@ class ApiKeyService {
         keyData.enableOpenAIResponsesPayloadRules,
         false
       )
-      const enableOpenAIResponsesCodexOriginator = parseBooleanWithDefault(
-        keyData.enableOpenAIResponsesCodexOriginator,
-        false
-      )
-      const enableOpenAIResponsesCodexUserAgent = parseBooleanWithDefault(
-        keyData.enableOpenAIResponsesCodexUserAgent,
-        false
-      )
 
       return {
         valid: true,
@@ -740,8 +710,6 @@ class ApiKeyService {
           usage,
           enableOpenAIResponsesCodexAdaptation,
           enableOpenAIResponsesPayloadRules,
-          enableOpenAIResponsesCodexOriginator,
-          enableOpenAIResponsesCodexUserAgent,
           openaiResponsesPayloadRules
         }
       }
@@ -947,14 +915,6 @@ class ApiKeyService {
         )
         key.enableOpenAIResponsesPayloadRules = parseBooleanWithDefault(
           key.enableOpenAIResponsesPayloadRules,
-          false
-        )
-        key.enableOpenAIResponsesCodexOriginator = parseBooleanWithDefault(
-          key.enableOpenAIResponsesCodexOriginator,
-          false
-        )
-        key.enableOpenAIResponsesCodexUserAgent = parseBooleanWithDefault(
-          key.enableOpenAIResponsesCodexUserAgent,
           false
         )
         key.permissions = normalizePermissions(key.permissions)
@@ -1222,14 +1182,6 @@ class ApiKeyService {
           key.enableOpenAIResponsesPayloadRules,
           false
         )
-        key.enableOpenAIResponsesCodexOriginator = parseBooleanWithDefault(
-          key.enableOpenAIResponsesCodexOriginator,
-          false
-        )
-        key.enableOpenAIResponsesCodexUserAgent = parseBooleanWithDefault(
-          key.enableOpenAIResponsesCodexUserAgent,
-          false
-        )
         key.isActivated = key.isActivated === 'true' || key.isActivated === true
         key.permissions = key.permissions || 'all'
         key.activationUnit = key.activationUnit || 'days'
@@ -1446,8 +1398,6 @@ class ApiKeyService {
         'weeklyResetHour', // 周费用重置时 (0-23)
         'enableOpenAIResponsesCodexAdaptation',
         'enableOpenAIResponsesPayloadRules',
-        'enableOpenAIResponsesCodexOriginator',
-        'enableOpenAIResponsesCodexUserAgent',
         'openaiResponsesPayloadRules'
       ]
       const updatedData = { ...keyData }
@@ -1474,9 +1424,7 @@ class ApiKeyService {
             field === 'enableClientRestriction' ||
             field === 'isActivated' ||
             field === 'enableOpenAIResponsesCodexAdaptation' ||
-            field === 'enableOpenAIResponsesPayloadRules' ||
-            field === 'enableOpenAIResponsesCodexOriginator' ||
-            field === 'enableOpenAIResponsesCodexUserAgent'
+            field === 'enableOpenAIResponsesPayloadRules'
           ) {
             // 布尔值转字符串
             updatedData[field] = String(value)
@@ -2640,14 +2588,6 @@ class ApiKeyService {
         ),
         enableOpenAIResponsesPayloadRules: parseBooleanWithDefault(
           keyData.enableOpenAIResponsesPayloadRules,
-          false
-        ),
-        enableOpenAIResponsesCodexOriginator: parseBooleanWithDefault(
-          keyData.enableOpenAIResponsesCodexOriginator,
-          false
-        ),
-        enableOpenAIResponsesCodexUserAgent: parseBooleanWithDefault(
-          keyData.enableOpenAIResponsesCodexUserAgent,
           false
         ),
         openaiResponsesPayloadRules: parseOpenAIResponsesPayloadRules(
