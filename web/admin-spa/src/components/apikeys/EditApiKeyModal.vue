@@ -639,6 +639,38 @@
 
               <label class="flex cursor-pointer items-start gap-3">
                 <input
+                  v-model="form.enableOpenAIResponsesCodexHeaders"
+                  class="mt-0.5 h-4 w-4 rounded border-gray-300 bg-gray-100 text-emerald-600 focus:ring-emerald-500"
+                  type="checkbox"
+                />
+                <span class="flex-1">
+                  <span class="block text-sm font-medium text-gray-700 dark:text-gray-300">
+                    <span class="inline-flex items-center gap-1">
+                      <span>以 Codex 客户端身份请求上游</span>
+                      <el-tooltip placement="top">
+                        <template #content>
+                          <div class="w-[250px] space-y-2 text-xs leading-relaxed">
+                            <div>只对 `/openai/responses` 系列路由生效。</div>
+                            <div>开启后会带上 `originator` 和 `user-agent`。</div>
+                            <div>Codex CLI 请求透传其原始值。</div>
+                            <div>其他客户端注入标准 `codex_cli_rs` 身份。</div>
+                            <div>关闭时维持现状，不发送这两个头。</div>
+                            <div>上游可能按客户端身份区分模型可用性，建议先小范围验证。</div>
+                          </div>
+                        </template>
+                        <span class="inline-flex" @click.stop.prevent>
+                          <i
+                            class="fas fa-question-circle cursor-help text-xs text-gray-400 hover:text-gray-600"
+                          />
+                        </span>
+                      </el-tooltip>
+                    </span>
+                  </span>
+                </span>
+              </label>
+
+              <label class="flex cursor-pointer items-start gap-3">
+                <input
                   v-model="form.enableOpenAIResponsesPayloadRules"
                   class="mt-0.5 h-4 w-4 rounded border-gray-300 bg-gray-100 text-emerald-600 focus:ring-emerald-500"
                   type="checkbox"
@@ -1260,6 +1292,7 @@ const form = reactive({
   allowedClients: [],
   enableOpenAIResponsesCodexAdaptation: true,
   enableOpenAIResponsesPayloadRules: false,
+  enableOpenAIResponsesCodexHeaders: false,
   openaiResponsesPayloadRules: [],
   tags: [],
   isActive: true,
@@ -1476,6 +1509,7 @@ const updateApiKey = async () => {
       weeklyResetHour: form.weeklyResetHour,
       enableOpenAIResponsesCodexAdaptation: form.enableOpenAIResponsesCodexAdaptation,
       enableOpenAIResponsesPayloadRules: form.enableOpenAIResponsesPayloadRules,
+      enableOpenAIResponsesCodexHeaders: form.enableOpenAIResponsesCodexHeaders,
       // 规则内容独立持久化，关闭开关时也要保留已保存的休眠规则。
       openaiResponsesPayloadRules: payloadRules,
       permissions: form.permissions,
@@ -1890,6 +1924,9 @@ onMounted(async () => {
   form.enableOpenAIResponsesPayloadRules =
     props.apiKey.enableOpenAIResponsesPayloadRules === true ||
     props.apiKey.enableOpenAIResponsesPayloadRules === 'true'
+  form.enableOpenAIResponsesCodexHeaders =
+    props.apiKey.enableOpenAIResponsesCodexHeaders === true ||
+    props.apiKey.enableOpenAIResponsesCodexHeaders === 'true'
   form.openaiResponsesPayloadRules = Array.isArray(props.apiKey.openaiResponsesPayloadRules)
     ? props.apiKey.openaiResponsesPayloadRules.map((rule) => normalizePayloadRule(rule))
     : []

@@ -1501,6 +1501,7 @@ router.post('/api-keys', authenticateAdmin, async (req, res) => {
       weeklyResetHour, // 周费用重置时 (0-23)
       enableOpenAIResponsesCodexAdaptation,
       enableOpenAIResponsesPayloadRules,
+      enableOpenAIResponsesCodexHeaders,
       openaiResponsesPayloadRules
     } = req.body
 
@@ -1656,6 +1657,13 @@ router.post('/api-keys', authenticateAdmin, async (req, res) => {
       return res.status(400).json({ error: 'enableOpenAIResponsesPayloadRules must be a boolean' })
     }
 
+    if (
+      enableOpenAIResponsesCodexHeaders !== undefined &&
+      typeof enableOpenAIResponsesCodexHeaders !== 'boolean'
+    ) {
+      return res.status(400).json({ error: 'enableOpenAIResponsesCodexHeaders must be a boolean' })
+    }
+
     const payloadRulesValidation = requestBodyRuleService.validateAndNormalizeRules(
       openaiResponsesPayloadRules
     )
@@ -1725,6 +1733,8 @@ router.post('/api-keys', authenticateAdmin, async (req, res) => {
           : true,
       enableOpenAIResponsesPayloadRules:
         enableOpenAIResponsesPayloadRules !== undefined ? enableOpenAIResponsesPayloadRules : false,
+      enableOpenAIResponsesCodexHeaders:
+        enableOpenAIResponsesCodexHeaders !== undefined ? enableOpenAIResponsesCodexHeaders : false,
       openaiResponsesPayloadRules: payloadRulesValidation.rules
     })
 
@@ -2193,6 +2203,7 @@ router.put('/api-keys/:keyId', authenticateAdmin, async (req, res) => {
       weeklyResetHour, // 周费用重置时 (0-23)
       enableOpenAIResponsesCodexAdaptation,
       enableOpenAIResponsesPayloadRules,
+      enableOpenAIResponsesCodexHeaders,
       openaiResponsesPayloadRules
     } = req.body
 
@@ -2425,6 +2436,15 @@ router.put('/api-keys/:keyId', authenticateAdmin, async (req, res) => {
           .json({ error: 'enableOpenAIResponsesPayloadRules must be a boolean' })
       }
       updates.enableOpenAIResponsesPayloadRules = enableOpenAIResponsesPayloadRules
+    }
+
+    if (enableOpenAIResponsesCodexHeaders !== undefined) {
+      if (typeof enableOpenAIResponsesCodexHeaders !== 'boolean') {
+        return res
+          .status(400)
+          .json({ error: 'enableOpenAIResponsesCodexHeaders must be a boolean' })
+      }
+      updates.enableOpenAIResponsesCodexHeaders = enableOpenAIResponsesCodexHeaders
     }
 
     if (openaiResponsesPayloadRules !== undefined) {

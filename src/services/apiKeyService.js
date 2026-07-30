@@ -209,6 +209,7 @@ class ApiKeyService {
       weeklyResetHour = 0, // 周费用重置时 (0-23)
       enableOpenAIResponsesCodexAdaptation = true,
       enableOpenAIResponsesPayloadRules = false,
+      enableOpenAIResponsesCodexHeaders = false,
       openaiResponsesPayloadRules = []
     } = options
 
@@ -274,6 +275,7 @@ class ApiKeyService {
       weeklyResetHour: String(weeklyResetHour || 0), // 周费用重置时 (0-23)
       enableOpenAIResponsesCodexAdaptation: String(enableOpenAIResponsesCodexAdaptation !== false),
       enableOpenAIResponsesPayloadRules: String(enableOpenAIResponsesPayloadRules === true),
+      enableOpenAIResponsesCodexHeaders: String(enableOpenAIResponsesCodexHeaders === true),
       openaiResponsesPayloadRules: JSON.stringify(payloadRulesValidation.rules)
     }
 
@@ -351,6 +353,10 @@ class ApiKeyService {
       ),
       enableOpenAIResponsesPayloadRules: parseBooleanWithDefault(
         keyData.enableOpenAIResponsesPayloadRules,
+        false
+      ),
+      enableOpenAIResponsesCodexHeaders: parseBooleanWithDefault(
+        keyData.enableOpenAIResponsesCodexHeaders,
         false
       ),
       openaiResponsesPayloadRules: parseOpenAIResponsesPayloadRules(
@@ -518,6 +524,10 @@ class ApiKeyService {
         keyData.enableOpenAIResponsesPayloadRules,
         false
       )
+      const enableOpenAIResponsesCodexHeaders = parseBooleanWithDefault(
+        keyData.enableOpenAIResponsesCodexHeaders,
+        false
+      )
 
       return {
         valid: true,
@@ -559,6 +569,7 @@ class ApiKeyService {
           serviceLimits,
           enableOpenAIResponsesCodexAdaptation,
           enableOpenAIResponsesPayloadRules,
+          enableOpenAIResponsesCodexHeaders,
           openaiResponsesPayloadRules
         }
       }
@@ -661,6 +672,10 @@ class ApiKeyService {
         keyData.enableOpenAIResponsesPayloadRules,
         false
       )
+      const enableOpenAIResponsesCodexHeaders = parseBooleanWithDefault(
+        keyData.enableOpenAIResponsesCodexHeaders,
+        false
+      )
 
       return {
         valid: true,
@@ -710,6 +725,7 @@ class ApiKeyService {
           usage,
           enableOpenAIResponsesCodexAdaptation,
           enableOpenAIResponsesPayloadRules,
+          enableOpenAIResponsesCodexHeaders,
           openaiResponsesPayloadRules
         }
       }
@@ -915,6 +931,10 @@ class ApiKeyService {
         )
         key.enableOpenAIResponsesPayloadRules = parseBooleanWithDefault(
           key.enableOpenAIResponsesPayloadRules,
+          false
+        )
+        key.enableOpenAIResponsesCodexHeaders = parseBooleanWithDefault(
+          key.enableOpenAIResponsesCodexHeaders,
           false
         )
         key.permissions = normalizePermissions(key.permissions)
@@ -1182,6 +1202,10 @@ class ApiKeyService {
           key.enableOpenAIResponsesPayloadRules,
           false
         )
+        key.enableOpenAIResponsesCodexHeaders = parseBooleanWithDefault(
+          key.enableOpenAIResponsesCodexHeaders,
+          false
+        )
         key.isActivated = key.isActivated === 'true' || key.isActivated === true
         key.permissions = key.permissions || 'all'
         key.activationUnit = key.activationUnit || 'days'
@@ -1398,6 +1422,7 @@ class ApiKeyService {
         'weeklyResetHour', // 周费用重置时 (0-23)
         'enableOpenAIResponsesCodexAdaptation',
         'enableOpenAIResponsesPayloadRules',
+        'enableOpenAIResponsesCodexHeaders',
         'openaiResponsesPayloadRules'
       ]
       const updatedData = { ...keyData }
@@ -1424,7 +1449,8 @@ class ApiKeyService {
             field === 'enableClientRestriction' ||
             field === 'isActivated' ||
             field === 'enableOpenAIResponsesCodexAdaptation' ||
-            field === 'enableOpenAIResponsesPayloadRules'
+            field === 'enableOpenAIResponsesPayloadRules' ||
+            field === 'enableOpenAIResponsesCodexHeaders'
           ) {
             // 布尔值转字符串
             updatedData[field] = String(value)
@@ -2588,6 +2614,10 @@ class ApiKeyService {
         ),
         enableOpenAIResponsesPayloadRules: parseBooleanWithDefault(
           keyData.enableOpenAIResponsesPayloadRules,
+          false
+        ),
+        enableOpenAIResponsesCodexHeaders: parseBooleanWithDefault(
+          keyData.enableOpenAIResponsesCodexHeaders,
           false
         ),
         openaiResponsesPayloadRules: parseOpenAIResponsesPayloadRules(

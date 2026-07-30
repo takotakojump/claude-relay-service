@@ -23,7 +23,8 @@ jest.mock('../src/utils/logger', () => ({
   warn: jest.fn(),
   error: jest.fn()
 }))
-jest.mock('../config/config', () => ({ upstreamError: {} }))
+// config/config.js 被 .gitignore 忽略，干净 checkout 上并不存在，必须用 virtual mock
+jest.mock('../config/config', () => ({ upstreamError: {} }), { virtual: true })
 
 const upstreamErrorHelper = require('../src/utils/upstreamErrorHelper')
 

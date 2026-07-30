@@ -548,3 +548,96 @@ describe('openai responses payload toggles', () => {
     expect(req.body.instructions).toBe(openaiRoutes.CODEX_CLI_INSTRUCTIONS)
   })
 })
+
+describe('openai responses codex client identity headers', () => {
+  const CODEX_UA = 'codex_cli_rs/0.150.0 (x86_64-unknown-linux-gnu)'
+
+  function mockOpenAIAccount() {
+    unifiedOpenAIScheduler.selectAccountForApiKey.mockResolvedValue({
+      accountId: 'openai-1',
+      accountType: 'openai'
+    })
+    openaiAccountService.getAccount.mockResolvedValue({
+      id: 'openai-1',
+      name: 'OpenAI Account',
+      accessToken: 'encrypted-token',
+      accountId: 'chatgpt-account-1'
+    })
+    axios.post.mockResolvedValue({
+      status: 200,
+      data: { model: 'gpt-5.6-sol', usage: {} },
+      headers: {}
+    })
+  }
+
+  function sentHeaders() {
+    return axios.post.mock.calls[0][2].headers
+  }
+
+  beforeEach(() => {
+    jest.clearAllMocks()
+    openaiAccountService.decrypt.mockReturnValue('decrypted-token')
+    mockOpenAIAccount()
+  })
+
+  test('sends no identity headers when the toggle is off', async () => {
+    const req = createReq({
+      userAgent: CODEX_UA,
+      body: { model: 'gpt-5.6-sol', prompt_cache_key: 'headers-off', stream: false },
+      apiKeyOverrides: {
+        enableOpenAIResponsesCodexAdaptation: false,
+        enableOpenAIResponsesCodexHeaders: false
+      }
+    })
+    req.headers['originator'] = 'codex_cli_rs'
+    req.headers['version'] = '0.150.0'
+
+    await openaiRoutes.handleResponses(req, createRes())
+
+    const headers = sentHeaders()
+    expect(headers['originator']).toBeUndefined()
+    expect(headers['user-agent']).toBeUndefined()
+    // version 本就在白名单内，与开关无关
+    expect(headers['version']).toBe('0.150.0')
+  })
+
+  test('forwards the client identity for real Codex CLI requests when the toggle is on', async () => {
+    const req = createReq({
+      userAgent: CODEX_UA,
+      body: { model: 'gpt-5.6-sol', prompt_cache_key: 'headers-passthrough', stream: false },
+      apiKeyOverrides: {
+        enableOpenAIResponsesCodexAdaptation: false,
+        enableOpenAIResponsesCodexHeaders: true
+      }
+    })
+    req.headers['originator'] = 'codex_cli_rs'
+    req.headers['version'] = '0.150.0'
+
+    await openaiRoutes.handleResponses(req, createRes())
+
+    const headers = sentHeaders()
+    expect(headers['originator']).toBe('codex_cli_rs')
+    expect(headers['user-agent']).toBe(CODEX_UA)
+    expect(headers['version']).toBe('0.150.0')
+  })
+
+  test('injects the standard identity for non-Codex clients when the toggle is on', async () => {
+    const req = createReq({
+      userAgent: 'python-requests/2.31.0',
+      body: { model: 'gpt-5.6-sol', prompt_cache_key: 'headers-inject', stream: false },
+      apiKeyOverrides: {
+        enableOpenAIResponsesCodexAdaptation: false,
+        enableOpenAIResponsesCodexHeaders: true
+      }
+    })
+    req.headers['version'] = '9.9.9'
+
+    await openaiRoutes.handleResponses(req, createRes())
+
+    const headers = sentHeaders()
+    expect(headers['originator']).toBe('codex_cli_rs')
+    expect(headers['user-agent']).toBe('codex_cli_rs/0.144.5')
+    // 客户端原始 version 被一并覆盖，避免与注入的 UA 错配
+    expect(headers['version']).toBe('0.144.5')
+  })
+})
