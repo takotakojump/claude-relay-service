@@ -580,40 +580,84 @@ describe('openai responses codex client identity headers', () => {
     mockOpenAIAccount()
   })
 
-  test('sends no identity headers when the toggle is off', async () => {
+  function codexReq(overrides, label) {
     const req = createReq({
       userAgent: CODEX_UA,
-      body: { model: 'gpt-5.6-sol', prompt_cache_key: 'headers-off', stream: false },
+      body: { model: 'gpt-5.6-sol', prompt_cache_key: label, stream: false },
       apiKeyOverrides: {
         enableOpenAIResponsesCodexAdaptation: false,
-        enableOpenAIResponsesCodexHeaders: false
+        ...overrides
       }
     })
     req.headers['originator'] = 'codex_cli_rs'
     req.headers['version'] = '0.150.0'
+    return req
+  }
 
-    await openaiRoutes.handleResponses(req, createRes())
+  test('sends neither header when both toggles are off', async () => {
+    await openaiRoutes.handleResponses(
+      codexReq(
+        {
+          enableOpenAIResponsesCodexOriginator: false,
+          enableOpenAIResponsesCodexUserAgent: false
+        },
+        'both-off'
+      ),
+      createRes()
+    )
 
     const headers = sentHeaders()
     expect(headers['originator']).toBeUndefined()
     expect(headers['user-agent']).toBeUndefined()
-    // version 本就在白名单内，与开关无关
+    // version 一直在白名单内透传，不受这两个开关影响
     expect(headers['version']).toBe('0.150.0')
   })
 
-  test('forwards the client identity for real Codex CLI requests when the toggle is on', async () => {
-    const req = createReq({
-      userAgent: CODEX_UA,
-      body: { model: 'gpt-5.6-sol', prompt_cache_key: 'headers-passthrough', stream: false },
-      apiKeyOverrides: {
-        enableOpenAIResponsesCodexAdaptation: false,
-        enableOpenAIResponsesCodexHeaders: true
-      }
-    })
-    req.headers['originator'] = 'codex_cli_rs'
-    req.headers['version'] = '0.150.0'
+  test('sends only originator when only that toggle is on', async () => {
+    await openaiRoutes.handleResponses(
+      codexReq(
+        {
+          enableOpenAIResponsesCodexOriginator: true,
+          enableOpenAIResponsesCodexUserAgent: false
+        },
+        'originator-only'
+      ),
+      createRes()
+    )
 
-    await openaiRoutes.handleResponses(req, createRes())
+    const headers = sentHeaders()
+    expect(headers['originator']).toBe('codex_cli_rs')
+    expect(headers['user-agent']).toBeUndefined()
+  })
+
+  test('sends only user-agent when only that toggle is on', async () => {
+    await openaiRoutes.handleResponses(
+      codexReq(
+        {
+          enableOpenAIResponsesCodexOriginator: false,
+          enableOpenAIResponsesCodexUserAgent: true
+        },
+        'ua-only'
+      ),
+      createRes()
+    )
+
+    const headers = sentHeaders()
+    expect(headers['originator']).toBeUndefined()
+    expect(headers['user-agent']).toBe(CODEX_UA)
+  })
+
+  test('forwards the real client identity for Codex CLI when both toggles are on', async () => {
+    await openaiRoutes.handleResponses(
+      codexReq(
+        {
+          enableOpenAIResponsesCodexOriginator: true,
+          enableOpenAIResponsesCodexUserAgent: true
+        },
+        'both-on'
+      ),
+      createRes()
+    )
 
     const headers = sentHeaders()
     expect(headers['originator']).toBe('codex_cli_rs')
@@ -621,13 +665,14 @@ describe('openai responses codex client identity headers', () => {
     expect(headers['version']).toBe('0.150.0')
   })
 
-  test('injects the standard identity for non-Codex clients when the toggle is on', async () => {
+  test('injects the standard identity for non-Codex clients when both toggles are on', async () => {
     const req = createReq({
       userAgent: 'python-requests/2.31.0',
       body: { model: 'gpt-5.6-sol', prompt_cache_key: 'headers-inject', stream: false },
       apiKeyOverrides: {
         enableOpenAIResponsesCodexAdaptation: false,
-        enableOpenAIResponsesCodexHeaders: true
+        enableOpenAIResponsesCodexOriginator: true,
+        enableOpenAIResponsesCodexUserAgent: true
       }
     })
     req.headers['version'] = '9.9.9'
@@ -637,7 +682,28 @@ describe('openai responses codex client identity headers', () => {
     const headers = sentHeaders()
     expect(headers['originator']).toBe('codex_cli_rs')
     expect(headers['user-agent']).toBe('codex_cli_rs/0.144.5')
-    // 客户端原始 version 被一并覆盖，避免与注入的 UA 错配
+    // 注入 UA 时同步覆盖 version，避免错配
     expect(headers['version']).toBe('0.144.5')
+  })
+
+  test('leaves version untouched when injecting originator alone for a non-Codex client', async () => {
+    const req = createReq({
+      userAgent: 'python-requests/2.31.0',
+      body: { model: 'gpt-5.6-sol', prompt_cache_key: 'inject-originator-only', stream: false },
+      apiKeyOverrides: {
+        enableOpenAIResponsesCodexAdaptation: false,
+        enableOpenAIResponsesCodexOriginator: true,
+        enableOpenAIResponsesCodexUserAgent: false
+      }
+    })
+    req.headers['version'] = '9.9.9'
+
+    await openaiRoutes.handleResponses(req, createRes())
+
+    const headers = sentHeaders()
+    expect(headers['originator']).toBe('codex_cli_rs')
+    expect(headers['user-agent']).toBeUndefined()
+    // 没有注入 UA，就没有错配问题，version 保持客户端原值
+    expect(headers['version']).toBe('9.9.9')
   })
 })

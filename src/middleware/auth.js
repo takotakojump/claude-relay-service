@@ -1325,7 +1325,8 @@ const authenticateApiKey = async (req, res, next) => {
       weeklyResetHour: validation.keyData.weeklyResetHour || 0,
       enableOpenAIResponsesCodexAdaptation: validation.keyData.enableOpenAIResponsesCodexAdaptation,
       enableOpenAIResponsesPayloadRules: validation.keyData.enableOpenAIResponsesPayloadRules,
-      enableOpenAIResponsesCodexHeaders: validation.keyData.enableOpenAIResponsesCodexHeaders,
+      enableOpenAIResponsesCodexOriginator: validation.keyData.enableOpenAIResponsesCodexOriginator,
+      enableOpenAIResponsesCodexUserAgent: validation.keyData.enableOpenAIResponsesCodexUserAgent,
       openaiResponsesPayloadRules: validation.keyData.openaiResponsesPayloadRules
     }
 

@@ -209,7 +209,8 @@ class ApiKeyService {
       weeklyResetHour = 0, // 周费用重置时 (0-23)
       enableOpenAIResponsesCodexAdaptation = true,
       enableOpenAIResponsesPayloadRules = false,
-      enableOpenAIResponsesCodexHeaders = false,
+      enableOpenAIResponsesCodexOriginator = false,
+      enableOpenAIResponsesCodexUserAgent = false,
       openaiResponsesPayloadRules = []
     } = options
 
@@ -275,7 +276,8 @@ class ApiKeyService {
       weeklyResetHour: String(weeklyResetHour || 0), // 周费用重置时 (0-23)
       enableOpenAIResponsesCodexAdaptation: String(enableOpenAIResponsesCodexAdaptation !== false),
       enableOpenAIResponsesPayloadRules: String(enableOpenAIResponsesPayloadRules === true),
-      enableOpenAIResponsesCodexHeaders: String(enableOpenAIResponsesCodexHeaders === true),
+      enableOpenAIResponsesCodexOriginator: String(enableOpenAIResponsesCodexOriginator === true),
+      enableOpenAIResponsesCodexUserAgent: String(enableOpenAIResponsesCodexUserAgent === true),
       openaiResponsesPayloadRules: JSON.stringify(payloadRulesValidation.rules)
     }
 
@@ -355,8 +357,12 @@ class ApiKeyService {
         keyData.enableOpenAIResponsesPayloadRules,
         false
       ),
-      enableOpenAIResponsesCodexHeaders: parseBooleanWithDefault(
-        keyData.enableOpenAIResponsesCodexHeaders,
+      enableOpenAIResponsesCodexOriginator: parseBooleanWithDefault(
+        keyData.enableOpenAIResponsesCodexOriginator,
+        false
+      ),
+      enableOpenAIResponsesCodexUserAgent: parseBooleanWithDefault(
+        keyData.enableOpenAIResponsesCodexUserAgent,
         false
       ),
       openaiResponsesPayloadRules: parseOpenAIResponsesPayloadRules(
@@ -524,8 +530,12 @@ class ApiKeyService {
         keyData.enableOpenAIResponsesPayloadRules,
         false
       )
-      const enableOpenAIResponsesCodexHeaders = parseBooleanWithDefault(
-        keyData.enableOpenAIResponsesCodexHeaders,
+      const enableOpenAIResponsesCodexOriginator = parseBooleanWithDefault(
+        keyData.enableOpenAIResponsesCodexOriginator,
+        false
+      )
+      const enableOpenAIResponsesCodexUserAgent = parseBooleanWithDefault(
+        keyData.enableOpenAIResponsesCodexUserAgent,
         false
       )
 
@@ -569,7 +579,8 @@ class ApiKeyService {
           serviceLimits,
           enableOpenAIResponsesCodexAdaptation,
           enableOpenAIResponsesPayloadRules,
-          enableOpenAIResponsesCodexHeaders,
+          enableOpenAIResponsesCodexOriginator,
+          enableOpenAIResponsesCodexUserAgent,
           openaiResponsesPayloadRules
         }
       }
@@ -672,8 +683,12 @@ class ApiKeyService {
         keyData.enableOpenAIResponsesPayloadRules,
         false
       )
-      const enableOpenAIResponsesCodexHeaders = parseBooleanWithDefault(
-        keyData.enableOpenAIResponsesCodexHeaders,
+      const enableOpenAIResponsesCodexOriginator = parseBooleanWithDefault(
+        keyData.enableOpenAIResponsesCodexOriginator,
+        false
+      )
+      const enableOpenAIResponsesCodexUserAgent = parseBooleanWithDefault(
+        keyData.enableOpenAIResponsesCodexUserAgent,
         false
       )
 
@@ -725,7 +740,8 @@ class ApiKeyService {
           usage,
           enableOpenAIResponsesCodexAdaptation,
           enableOpenAIResponsesPayloadRules,
-          enableOpenAIResponsesCodexHeaders,
+          enableOpenAIResponsesCodexOriginator,
+          enableOpenAIResponsesCodexUserAgent,
           openaiResponsesPayloadRules
         }
       }
@@ -933,8 +949,12 @@ class ApiKeyService {
           key.enableOpenAIResponsesPayloadRules,
           false
         )
-        key.enableOpenAIResponsesCodexHeaders = parseBooleanWithDefault(
-          key.enableOpenAIResponsesCodexHeaders,
+        key.enableOpenAIResponsesCodexOriginator = parseBooleanWithDefault(
+          key.enableOpenAIResponsesCodexOriginator,
+          false
+        )
+        key.enableOpenAIResponsesCodexUserAgent = parseBooleanWithDefault(
+          key.enableOpenAIResponsesCodexUserAgent,
           false
         )
         key.permissions = normalizePermissions(key.permissions)
@@ -1202,8 +1222,12 @@ class ApiKeyService {
           key.enableOpenAIResponsesPayloadRules,
           false
         )
-        key.enableOpenAIResponsesCodexHeaders = parseBooleanWithDefault(
-          key.enableOpenAIResponsesCodexHeaders,
+        key.enableOpenAIResponsesCodexOriginator = parseBooleanWithDefault(
+          key.enableOpenAIResponsesCodexOriginator,
+          false
+        )
+        key.enableOpenAIResponsesCodexUserAgent = parseBooleanWithDefault(
+          key.enableOpenAIResponsesCodexUserAgent,
           false
         )
         key.isActivated = key.isActivated === 'true' || key.isActivated === true
@@ -1422,7 +1446,8 @@ class ApiKeyService {
         'weeklyResetHour', // 周费用重置时 (0-23)
         'enableOpenAIResponsesCodexAdaptation',
         'enableOpenAIResponsesPayloadRules',
-        'enableOpenAIResponsesCodexHeaders',
+        'enableOpenAIResponsesCodexOriginator',
+        'enableOpenAIResponsesCodexUserAgent',
         'openaiResponsesPayloadRules'
       ]
       const updatedData = { ...keyData }
@@ -1450,7 +1475,8 @@ class ApiKeyService {
             field === 'isActivated' ||
             field === 'enableOpenAIResponsesCodexAdaptation' ||
             field === 'enableOpenAIResponsesPayloadRules' ||
-            field === 'enableOpenAIResponsesCodexHeaders'
+            field === 'enableOpenAIResponsesCodexOriginator' ||
+            field === 'enableOpenAIResponsesCodexUserAgent'
           ) {
             // 布尔值转字符串
             updatedData[field] = String(value)
@@ -2616,8 +2642,12 @@ class ApiKeyService {
           keyData.enableOpenAIResponsesPayloadRules,
           false
         ),
-        enableOpenAIResponsesCodexHeaders: parseBooleanWithDefault(
-          keyData.enableOpenAIResponsesCodexHeaders,
+        enableOpenAIResponsesCodexOriginator: parseBooleanWithDefault(
+          keyData.enableOpenAIResponsesCodexOriginator,
+          false
+        ),
+        enableOpenAIResponsesCodexUserAgent: parseBooleanWithDefault(
+          keyData.enableOpenAIResponsesCodexUserAgent,
           false
         ),
         openaiResponsesPayloadRules: parseOpenAIResponsesPayloadRules(

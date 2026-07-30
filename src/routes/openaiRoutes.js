@@ -438,18 +438,22 @@ const handleResponses = async (req, res) => {
     headers['accept'] = isStream ? 'text/event-stream' : 'application/json'
     headers['content-type'] = 'application/json'
 
-    // 可选的 Codex 客户端身份头（按 API Key 开关，默认关闭以保持既有行为）
-    // 关闭时不发送 originator/user-agent，上游只能看到 axios 默认 UA
-    if (apiKeyData.enableOpenAIResponsesCodexHeaders === true) {
+    // 可选的 Codex 客户端身份头，originator 与 user-agent 各自独立开关，默认均关闭以保持既有行为。
+    // 拆成两个开关是为了能单独验证到底哪个头对上游的模型可用性判定起作用。
+    // 注意 version 一直在上面的白名单里透传，不受这两个开关影响。
+    if (apiKeyData.enableOpenAIResponsesCodexOriginator === true) {
+      // 真 Codex CLI 透传其原始值，其他客户端注入标准值
+      headers['originator'] = isCodexCLI
+        ? incoming['originator'] || CODEX_CLIENT_IDENTITY.originator
+        : CODEX_CLIENT_IDENTITY.originator
+    }
+
+    if (apiKeyData.enableOpenAIResponsesCodexUserAgent === true) {
       if (isCodexCLI) {
-        // 真 Codex CLI：透传客户端自己的身份，缺项用标准值补齐
-        headers['originator'] = incoming['originator'] || CODEX_CLIENT_IDENTITY.originator
         headers['user-agent'] = incoming['user-agent'] || CODEX_CLIENT_IDENTITY.userAgent
-        headers['version'] = incoming['version'] || CODEX_CLIENT_IDENTITY.version
       } else {
-        // 其他客户端：注入标准身份，避免把 python-requests 之类的真实 UA 透到上游
-        // version 已在白名单中可能带有客户端原值，这里一并覆盖，避免与注入的 UA 错配
-        headers['originator'] = CODEX_CLIENT_IDENTITY.originator
+        // 非 Codex 客户端：注入标准 UA，避免把 python-requests 之类的真实 UA 透到上游。
+        // 同时覆盖 version，否则会出现「客户端原始 version + 注入 UA」的错配组合。
         headers['user-agent'] = CODEX_CLIENT_IDENTITY.userAgent
         headers['version'] = CODEX_CLIENT_IDENTITY.version
       }
