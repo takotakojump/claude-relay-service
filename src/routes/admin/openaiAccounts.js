@@ -18,6 +18,13 @@ const { formatAccountExpiry, mapExpiryField } = require('./utils')
 
 const router = express.Router()
 
+// 额度快照的复用窗口：这段时间内不再重复打上游
+const USAGE_CACHE_TTL_MS = 300 * 1000
+
+// 拉取未得出结论（403 / 代理故障 / token 刷新失败）时的退避窗口。
+// 这类账户不会写下 whamFetchedAt，用普通冷却会退化成永久的固定节奏重试。
+const USAGE_FETCH_BACKOFF_MS = 30 * 60 * 1000
+
 // OpenAI OAuth 配置
 const OPENAI_CONFIG = {
   BASE_URL: 'https://auth.openai.com',
@@ -311,6 +318,91 @@ router.get('/', authenticateAdmin, async (req, res) => {
     return res.status(500).json({
       success: false,
       message: '获取账户列表失败',
+      error: error.message
+    })
+  }
+})
+
+// 批量刷新 OpenAI 账户的 Codex 额度快照
+// 与 Claude 侧 GET /admin/claude-accounts/usage 保持同一套语义：并发拉取、短 TTL 缓存、
+// 失败时保留上一份快照而不是清空。
+router.get('/usage', authenticateAdmin, async (req, res) => {
+  try {
+    const accounts = await openaiAccountService.getAllAccounts()
+    const now = Date.now()
+
+    const usagePromises = accounts.map(async (account) => {
+      const cachedUsage = account.codexUsage || null
+
+      if (account.isActive !== true || account.status === 'unauthorized') {
+        return { accountId: account.id, codexUsage: cachedUsage }
+      }
+
+      // 冷却时钟用 whamFetchedAt 而不是 updatedAt：业务响应头会不断刷新 updatedAt，
+      // 拿它判定新鲜度会让活跃账户每次轮询都重新打上游，等于缓存失效。
+      const lastWhamFetchAt = cachedUsage?.whamFetchedAt
+        ? new Date(cachedUsage.whamFetchedAt).getTime()
+        : 0
+      if (lastWhamFetchAt && now - lastWhamFetchAt < USAGE_CACHE_TTL_MS) {
+        return { accountId: account.id, codexUsage: cachedUsage }
+      }
+
+      // 原子冷却闸门：多个管理端同时打开、或轮询脚本与管理页撞在一起时，
+      // 保证每个账户每个冷却窗口最多只有一次上游请求。
+      const mayFetch = await openaiAccountService.acquireCodexUsageFetchLock(
+        account.id,
+        USAGE_CACHE_TTL_MS / 1000
+      )
+      if (!mayFetch) {
+        return { accountId: account.id, codexUsage: cachedUsage }
+      }
+
+      try {
+        const usageData = await openaiAccountService.fetchCodexUsage(account.id)
+
+        // null 表示本次没有得出结论（403/404/无 token）。这类账户不会写下 whamFetchedAt，
+        // 若只按普通冷却处理，就会变成每个冷却窗口都重试一次的永久固定节奏，
+        // 因此拉长退避。
+        if (!usageData) {
+          await openaiAccountService.extendCodexUsageFetchCooldown(
+            account.id,
+            USAGE_FETCH_BACKOFF_MS / 1000
+          )
+          return { accountId: account.id, codexUsage: cachedUsage }
+        }
+
+        await openaiAccountService.updateCodexUsageSnapshot(account.id, usageData, {
+          source: 'wham'
+        })
+
+        const updated = await openaiAccountService.getAccountOverview(account.id)
+        return { accountId: account.id, codexUsage: updated?.codexUsage || null }
+      } catch (error) {
+        // 网络、代理或刷新 token 失败都属于「未得出结论」，不能当成「该账户没有用量」。
+        // 同样拉长退避，避免一个坏掉的账户把轮询变成对上游的稳定心跳。
+        logger.debug(`Failed to fetch Codex usage for ${account.id}: ${error.message}`)
+        await openaiAccountService
+          .extendCodexUsageFetchCooldown(account.id, USAGE_FETCH_BACKOFF_MS / 1000)
+          .catch(() => {})
+        return { accountId: account.id, codexUsage: cachedUsage }
+      }
+    })
+
+    const results = await Promise.allSettled(usagePromises)
+
+    const usageMap = {}
+    results.forEach((result) => {
+      if (result.status === 'fulfilled' && result.value) {
+        usageMap[result.value.accountId] = result.value.codexUsage
+      }
+    })
+
+    return res.json({ success: true, data: usageMap })
+  } catch (error) {
+    logger.error('❌ Failed to fetch OpenAI accounts usage:', error)
+    return res.status(500).json({
+      success: false,
+      message: '获取额度数据失败',
       error: error.message
     })
   }

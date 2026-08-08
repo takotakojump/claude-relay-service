@@ -2015,6 +2015,49 @@ class RedisClient {
     await pipeline.exec()
   }
 
+  /**
+   * 📊 只读查看服务窗口的当前用量。
+   *
+   * checkAndIncrementServiceWindow 会自增请求计数，查询接口绝不能调它——否则「查一次用量」
+   * 本身就会消耗一次配额。这里只做 GET，不写、不续期、不跑 Lua。
+   */
+  async peekServiceWindow(keyId, service, windowMinutes) {
+    const empty = {
+      currentRequests: 0,
+      currentCost: 0,
+      windowStart: null,
+      resetAt: null
+    }
+
+    const durationMs = Math.round(Number(windowMinutes) * 60 * 1000)
+    if (!Number.isFinite(durationMs) || durationMs <= 0) {
+      return empty
+    }
+
+    const windowStartValue = await this.client.get(`rate_limit:window_start:${keyId}:${service}`)
+    const windowStart = Number(windowStartValue)
+    if (!windowStartValue || !Number.isFinite(windowStart)) {
+      return empty
+    }
+
+    // 窗口已经走完但 key 还没被清理时，按新窗口（用量为 0）返回
+    if (Date.now() - windowStart >= durationMs) {
+      return empty
+    }
+
+    const [requestsRaw, costRaw] = await Promise.all([
+      this.client.get(`rate_limit:requests:${keyId}:${service}:${windowStartValue}`),
+      this.client.get(`rate_limit:cost:${keyId}:${service}:${windowStartValue}`)
+    ])
+
+    return {
+      currentRequests: Number(requestsRaw) || 0,
+      currentCost: Number(costRaw) || 0,
+      windowStart,
+      resetAt: new Date(windowStart + durationMs).toISOString()
+    }
+  }
+
   async checkAndIncrementServiceWindow(
     keyId,
     service,

@@ -13,6 +13,7 @@ const {
 } = require('../utils/testPayloadHelper')
 const modelsConfig = require('../../config/models')
 const { getSafeMessage } = require('../utils/errorSanitizer')
+const { getKeyRateLimitWindowUsage, getServiceLimitsUsage } = require('../utils/apiKeyUsageHelper')
 
 const router = express.Router()
 
@@ -93,6 +94,180 @@ router.post('/api/get-key-id', async (req, res) => {
     return res.status(500).json({
       error: 'Internal server error',
       message: 'Failed to retrieve API key ID'
+    })
+  }
+})
+
+/**
+ * 📊 API Key 自查用量与限制（供自定义工具消费）
+ *
+ * 完全本地：只读 Redis，不向上游发起任何请求。返回的上游配额是缓存快照，
+ * 带 updatedAt / isStale 供调用方自行判断新鲜度。
+ *
+ * 鉴权只接受 Authorization: Bearer <key>，不支持 query string —— 避免 key 进访问日志。
+ */
+router.get('/api/key-usage', async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization || ''
+    const match = authHeader.match(/^Bearer\s+(.+)$/i)
+    const apiKey = match ? match[1].trim() : ''
+
+    if (!apiKey) {
+      return res.status(400).json({
+        error: 'Missing API key',
+        message: 'Provide the API key via the Authorization: Bearer <key> header'
+      })
+    }
+
+    if (apiKey.length < 10 || apiKey.length > 512) {
+      return res.status(400).json({
+        error: 'Invalid API key format',
+        message: 'API key format is invalid'
+      })
+    }
+
+    // 不触发激活的验证方法：查询用量不应该把一个未激活的 Key 激活掉
+    const validation = await apiKeyService.validateApiKeyForStats(apiKey)
+    if (!validation.valid) {
+      const clientIP = req.ip || req.connection?.remoteAddress || 'unknown'
+      logger.security(`Invalid API key in key-usage: ${validation.error} from ${clientIP}`)
+
+      const isDisabledOrExpired = /已被禁用|已过期|disabled/i.test(validation.error || '')
+      return res.status(isDisabledOrExpired ? 403 : 401).json({
+        error: isDisabledOrExpired ? 'API key unavailable' : 'Invalid API key',
+        message: validation.error
+      })
+    }
+
+    const { keyData } = validation
+    const keyId = keyData.id
+
+    // serviceLimits / 周重置配置不在 validateApiKeyForStats 的返回里，单独取一次（同样是本地读）
+    const storedKeyData = (await redis.getApiKey(keyId)) || {}
+
+    const [costStats, window, serviceLimits, currentDailyCost] = await Promise.all([
+      redis.getCostStats(keyId),
+      getKeyRateLimitWindowUsage(keyId, keyData.rateLimitWindow),
+      getServiceLimitsUsage(keyId, storedKeyData),
+      redis.getDailyCost(keyId)
+    ])
+
+    const boundAccounts = {}
+
+    const loadBoundAccount = async (platform, accountId, overviewLoader) => {
+      if (!accountId) {
+        return
+      }
+
+      try {
+        const overview = await overviewLoader(accountId)
+        if (!overview) {
+          return
+        }
+
+        // 共享账户的额度由多个 Key 共用，暴露给任一持有者等于泄露跨租户信息。
+        // 这里沿用 /api/user-stats 的既有口径：只有专属账户才返回上游配额。
+        if (overview.accountType !== 'dedicated') {
+          boundAccounts[platform] = {
+            accountId,
+            accountType: overview.accountType || 'shared',
+            codexUsage: null,
+            claudeUsage: null,
+            reason: 'shared_account_quota_not_exposed'
+          }
+          return
+        }
+
+        boundAccounts[platform] = overview
+      } catch (error) {
+        logger.warn(`⚠️ Failed to load ${platform} account overview for key ${keyId}:`, error)
+      }
+    }
+
+    await Promise.allSettled([
+      loadBoundAccount('claude', keyData.claudeAccountId, (id) =>
+        claudeAccountService.getAccountOverview(id)
+      ),
+      loadBoundAccount('openai', keyData.openaiAccountId, (id) =>
+        openaiAccountService.getAccountOverview(id)
+      )
+    ])
+
+    return res.json({
+      success: true,
+      generatedAt: new Date().toISOString(),
+      data: {
+        key: {
+          id: keyId,
+          name: keyData.name,
+          description: keyData.description || '',
+          isActive: true,
+          createdAt: keyData.createdAt,
+          expiresAt: keyData.expiresAt || null,
+          expirationMode: keyData.expirationMode || 'fixed',
+          isActivated: keyData.isActivated === true,
+          permissions: keyData.permissions
+        },
+
+        usage: {
+          total: {
+            ...(keyData.usage?.total || {
+              requests: 0,
+              tokens: 0,
+              allTokens: 0,
+              inputTokens: 0,
+              outputTokens: 0,
+              cacheCreateTokens: 0,
+              cacheReadTokens: 0
+            }),
+            cost: costStats?.total || 0
+          },
+          daily: {
+            cost: currentDailyCost || 0,
+            resetAt: redis.getNextDailyResetTime().toISOString()
+          },
+          window: {
+            windowMinutes: window.windowMinutes,
+            startAt: window.startAt ? new Date(window.startAt).toISOString() : null,
+            endAt: window.endAt ? new Date(window.endAt).toISOString() : null,
+            remainingSeconds: window.remainingSeconds,
+            requests: window.requests,
+            tokens: window.tokens,
+            cost: window.cost
+          }
+        },
+
+        limits: {
+          tokenLimit: keyData.tokenLimit || 0,
+          concurrencyLimit: keyData.concurrencyLimit || 0,
+          rateLimitWindow: keyData.rateLimitWindow || 0,
+          rateLimitRequests: keyData.rateLimitRequests || 0,
+          rateLimitCost: keyData.rateLimitCost || 0,
+          dailyCostLimit: keyData.dailyCostLimit || 0,
+          totalCostLimit: keyData.totalCostLimit || 0,
+          weeklyOpusCostLimit: keyData.weeklyOpusCostLimit || 0,
+          weeklyOpusCost: keyData.weeklyOpusCost || 0,
+          weeklyResetDay: parseInt(storedKeyData.weeklyResetDay || 1, 10) || 1,
+          weeklyResetHour: parseInt(storedKeyData.weeklyResetHour || 0, 10) || 0
+        },
+
+        serviceLimits,
+
+        restrictions: {
+          enableModelRestriction: keyData.enableModelRestriction || false,
+          restrictedModels: keyData.restrictedModels || [],
+          enableClientRestriction: keyData.enableClientRestriction || false,
+          allowedClients: keyData.allowedClients || []
+        },
+
+        accounts: Object.keys(boundAccounts).length > 0 ? boundAccounts : null
+      }
+    })
+  } catch (error) {
+    logger.error('❌ Failed to process key usage query:', error)
+    return res.status(500).json({
+      error: 'Internal server error',
+      message: 'Failed to retrieve API key usage'
     })
   }
 })
@@ -386,41 +561,14 @@ router.post('/api/user-stats', async (req, res) => {
     let windowRemainingSeconds = null
 
     try {
-      // 获取当前时间窗口的请求次数、Token使用量和费用
-      if (fullKeyData.rateLimitWindow > 0) {
-        const client = redis.getClientSafe()
-        const requestCountKey = `rate_limit:requests:${keyId}`
-        const tokenCountKey = `rate_limit:tokens:${keyId}`
-        const costCountKey = `rate_limit:cost:${keyId}` // 新增：费用计数key
-        const windowStartKey = `rate_limit:window_start:${keyId}`
-
-        currentWindowRequests = parseInt((await client.get(requestCountKey)) || '0')
-        currentWindowTokens = parseInt((await client.get(tokenCountKey)) || '0')
-        currentWindowCost = parseFloat((await client.get(costCountKey)) || '0') // 新增：获取当前窗口费用
-
-        // 获取窗口开始时间和计算剩余时间
-        const windowStart = await client.get(windowStartKey)
-        if (windowStart) {
-          const now = Date.now()
-          windowStartTime = parseInt(windowStart)
-          const windowDuration = fullKeyData.rateLimitWindow * 60 * 1000 // 转换为毫秒
-          windowEndTime = windowStartTime + windowDuration
-
-          // 如果窗口还有效
-          if (now < windowEndTime) {
-            windowRemainingSeconds = Math.max(0, Math.floor((windowEndTime - now) / 1000))
-          } else {
-            // 窗口已过期，下次请求会重置
-            windowStartTime = null
-            windowEndTime = null
-            windowRemainingSeconds = 0
-            // 重置计数为0，因为窗口已过期
-            currentWindowRequests = 0
-            currentWindowTokens = 0
-            currentWindowCost = 0 // 新增：重置窗口费用
-          }
-        }
-      }
+      // 与 /api/key-usage 共用同一份窗口读取逻辑，避免两处实现漂移
+      const window = await getKeyRateLimitWindowUsage(keyId, fullKeyData.rateLimitWindow)
+      currentWindowRequests = window.requests
+      currentWindowTokens = window.tokens
+      currentWindowCost = window.cost
+      windowStartTime = window.startAt
+      windowEndTime = window.endAt
+      windowRemainingSeconds = window.remainingSeconds
 
       // 获取当日费用
       currentDailyCost = (await redis.getDailyCost(keyId)) || 0

@@ -256,29 +256,49 @@
           </div>
 
           <div v-else-if="account.platform === 'openai'" class="mt-3">
-            <div v-if="account.codexUsage" class="space-y-2">
+            <div v-if="hasAnyCodexUsage(account.codexUsage)" class="space-y-2">
               <div
-                v-for="type in ['primary', 'secondary']"
-                :key="`${account.key}-${type}`"
+                v-if="isCodexSnapshotStale(account.codexUsage)"
+                class="inline-flex items-center rounded-full bg-gray-100 px-2 py-0.5 text-[11px] font-medium text-gray-500 dark:bg-gray-700 dark:text-gray-300"
+              >
+                <i class="fas fa-clock-rotate-left mr-1" />数据已过期
+              </div>
+              <div
+                v-for="badge in getCodexAvailabilityBadges(account.codexAvailability)"
+                :key="badge.key"
+                class="inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium"
+                :class="badge.className"
+                :title="badge.detail"
+              >
+                {{ badge.text }}
+              </div>
+              <div
+                v-for="row in flattenCodexLimits(account.codexUsage)"
+                :key="`${account.key}-${row.key}`"
                 class="quota-row"
               >
                 <div class="quota-header">
-                  <span class="quota-tag" :class="type === 'primary' ? 'tag-indigo' : 'tag-blue'">
-                    {{ getCodexWindowLabel(type) }}
+                  <span class="quota-tag" :class="row.isAdditional ? 'tag-blue' : 'tag-indigo'">
+                    {{ row.title }}
                   </span>
                   <span class="quota-percent">
-                    {{ formatCodexUsagePercent(account.codexUsage?.[type]) }}
+                    {{ formatCodexUsagePercent(row.window) }}
                   </span>
                 </div>
                 <div class="progress-track">
                   <div
                     class="progress-bar"
-                    :class="getCodexUsageBarClass(account.codexUsage?.[type])"
-                    :style="{ width: getCodexUsageWidth(account.codexUsage?.[type]) }"
+                    :class="getCodexUsageBarClass(row.window)"
+                    :style="{ width: getCodexUsageWidth(row.window) }"
                   />
                 </div>
                 <div class="quota-foot">
-                  重置剩余 {{ formatCodexRemaining(account.codexUsage?.[type]) }}
+                  已使用 {{ formatCodexUsagePercent(row.window) }} / 剩余
+                  {{ formatCodexRemainingPercent(row.window) }} · 重置剩余
+                  {{ formatCodexRemaining(row.window) }}
+                  <span v-if="formatCodexResetDate(row.window)">
+                    （{{ formatCodexResetDate(row.window) }}）
+                  </span>
                 </div>
               </div>
             </div>
@@ -302,6 +322,18 @@ import { storeToRefs } from 'pinia'
 import dayjs from 'dayjs'
 import { useApiStatsStore } from '@/stores/apistats'
 import { copyText, formatNumber, formatDate } from '@/utils/tools'
+import {
+  flattenCodexLimits,
+  formatCodexRemaining,
+  formatCodexRemainingPercent,
+  formatCodexResetDate,
+  formatCodexUsagePercent,
+  getCodexAvailabilityBadges,
+  getCodexUsageBarClass,
+  getCodexUsageWidth,
+  hasAnyCodexUsage,
+  isCodexSnapshotStale
+} from '@/utils/codexUsage'
 
 const apiStatsStore = useApiStatsStore()
 const {
@@ -472,70 +504,6 @@ const getSessionProgressBarClass = (status, account) => {
   if (normalized === 'allowed_warning') return 'bg-gradient-to-r from-yellow-500 to-orange-500'
   return 'bg-gradient-to-r from-blue-500 to-indigo-500'
 }
-
-const normalizeCodexUsagePercent = (usageItem) => {
-  if (!usageItem) return null
-  const percent =
-    typeof usageItem.usedPercent === 'number' && !Number.isNaN(usageItem.usedPercent)
-      ? usageItem.usedPercent
-      : null
-  const resetAfterSeconds =
-    typeof usageItem.resetAfterSeconds === 'number' && !Number.isNaN(usageItem.resetAfterSeconds)
-      ? usageItem.resetAfterSeconds
-      : null
-  const remainingSeconds =
-    typeof usageItem.remainingSeconds === 'number' ? usageItem.remainingSeconds : null
-  const resetAtMs = usageItem.resetAt ? Date.parse(usageItem.resetAt) : null
-  const resetElapsed =
-    resetAfterSeconds !== null &&
-    ((remainingSeconds !== null && remainingSeconds <= 0) ||
-      (resetAtMs !== null && !Number.isNaN(resetAtMs) && Date.now() >= resetAtMs))
-  if (resetElapsed) return 0
-  if (percent === null) return null
-  return Math.max(0, Math.min(100, percent))
-}
-
-const getCodexUsageBarClass = (usageItem) => {
-  const percent = normalizeCodexUsagePercent(usageItem)
-  if (percent === null) return 'bg-gradient-to-r from-gray-300 to-gray-400'
-  if (percent >= 90) return 'bg-gradient-to-r from-red-500 to-red-600'
-  if (percent >= 75) return 'bg-gradient-to-r from-yellow-500 to-orange-500'
-  return 'bg-gradient-to-r from-emerald-500 to-teal-500'
-}
-
-const getCodexUsageWidth = (usageItem) => {
-  const percent = normalizeCodexUsagePercent(usageItem)
-  if (percent === null) return '0%'
-  return `${percent}%`
-}
-
-const formatCodexUsagePercent = (usageItem) => {
-  const percent = normalizeCodexUsagePercent(usageItem)
-  if (percent === null) return '--'
-  return `${percent.toFixed(1)}%`
-}
-
-const formatCodexRemaining = (usageItem) => {
-  if (!usageItem) return '--'
-  let seconds = usageItem.remainingSeconds
-  if (seconds === null || seconds === undefined) {
-    seconds = usageItem.resetAfterSeconds
-  }
-  if (seconds === null || seconds === undefined || Number.isNaN(Number(seconds))) {
-    return '--'
-  }
-  seconds = Math.max(0, Math.floor(Number(seconds)))
-  const days = Math.floor(seconds / 86400)
-  const hours = Math.floor((seconds % 86400) / 3600)
-  const minutes = Math.floor((seconds % 3600) / 60)
-  const secs = seconds % 60
-  if (days > 0) return hours > 0 ? `${days}天${hours}小时` : `${days}天`
-  if (hours > 0) return minutes > 0 ? `${hours}小时${minutes}分钟` : `${hours}小时`
-  if (minutes > 0) return `${minutes}分钟`
-  return `${secs}秒`
-}
-
-const getCodexWindowLabel = (type) => (type === 'secondary' ? '周限' : '5h')
 </script>
 
 <style scoped>

@@ -14,7 +14,9 @@ const {
   logRefreshSkipped
 } = require('../../utils/tokenRefreshLogger')
 const tokenRefreshService = require('../tokenRefreshService')
+const codexClientIdentityService = require('../codexClientIdentityService')
 const { createEncryptor } = require('../../utils/commonHelper')
+const { resolveResetAt, normalizeLimitId } = require('../../utils/codexRateLimitHeaders')
 
 // 使用 commonHelper 的加密器
 const encryptor = createEncryptor('openai-account-salt')
@@ -24,6 +26,60 @@ const { encrypt, decrypt } = encryptor
 const OPENAI_ACCOUNT_KEY_PREFIX = 'openai:account:'
 const SHARED_OPENAI_ACCOUNTS_KEY = 'shared_openai_accounts'
 const ACCOUNT_SESSION_MAPPING_PREFIX = 'openai_session_account_mapping:'
+
+// Codex quota is stored as one JSON blob keyed by limitId. Overwriting the whole document is what
+// gives us delete semantics: a window or bucket that upstream stopped reporting simply stops
+// existing, instead of lingering forever as a ghost card.
+const CODEX_USAGE_SNAPSHOT_FIELD = 'codexUsageSnapshot'
+const CODEX_AVAILABILITY_FIELD = 'codexAvailability'
+
+// Cooldown gate keeping /wham/usage to at most one request per account per window
+const CODEX_USAGE_FETCH_LOCK_PREFIX = 'openai:account:codex_usage_fetch:'
+
+/**
+ * Compare-and-set on a single hash field.
+ *
+ * Both Codex writers are read-merge-write, and concurrent responses for the same account would
+ * otherwise clobber each other — a bucket updated by one response could silently revert. This
+ * carries no domain logic on purpose: the merge stays in JS, Lua only guards the swap.
+ *
+ * Returns 1 when the write landed, 0 when the field moved underneath us.
+ */
+const CAS_HSET_SCRIPT = `
+local current = redis.call('HGET', KEYS[1], ARGV[1])
+if current == false then current = '' end
+if current == ARGV[2] then
+  redis.call('HSET', KEYS[1], ARGV[1], ARGV[3])
+  return 1
+end
+return 0
+`
+
+const CAS_MAX_ATTEMPTS = 3
+
+// Pre-rewrite flat fields. Read for migration, deleted on the first write of the new shape.
+const LEGACY_CODEX_USAGE_FIELDS = [
+  'codexPrimaryUsedPercent',
+  'codexPrimaryResetAfterSeconds',
+  'codexPrimaryWindowMinutes',
+  'codexSecondaryUsedPercent',
+  'codexSecondaryResetAfterSeconds',
+  'codexSecondaryWindowMinutes',
+  'codexPrimaryOverSecondaryLimitPercent',
+  'codexUsageUpdatedAt'
+]
+
+// Beyond this age a snapshot is flagged stale. Deliberately longer than the admin refresh TTL so
+// normal page loads do not paint everything as stale between refreshes.
+const CODEX_USAGE_STALE_AFTER_MS = 15 * 60 * 1000
+
+// Authoritative quota source. Business response headers are a real-time supplement on top of it.
+const CODEX_USAGE_ENDPOINT = 'https://chatgpt.com/backend-api/wham/usage'
+const CODEX_USAGE_REQUEST_TIMEOUT_MS = 15000
+
+// The documented /wham/usage schema has not been verified against a live account; log the first
+// successful payload once so the tolerant parsing can be tightened against reality later.
+let whamShapeLogged = false
 
 // 🧹 定期清理缓存（每10分钟）
 setInterval(
@@ -43,74 +99,187 @@ function toNumberOrNull(value) {
   return Number.isFinite(num) ? num : null
 }
 
-function computeResetMeta(updatedAt, resetAfterSeconds) {
-  if (!updatedAt || resetAfterSeconds === null || resetAfterSeconds === undefined) {
-    return {
-      resetAt: null,
-      remainingSeconds: null
+function parseJsonOrNull(raw) {
+  if (!raw || typeof raw !== 'string') {
+    return null
+  }
+
+  try {
+    const parsed = JSON.parse(raw)
+    return parsed && typeof parsed === 'object' ? parsed : null
+  } catch (error) {
+    return null
+  }
+}
+
+/**
+ * Read a hash field, let the caller merge it, then write back only if nobody else moved it.
+ *
+ * `merge` receives the raw stored string (null when absent) and returns the string to store, or
+ * null to skip the write entirely. Retries a bounded number of times on contention, then falls
+ * back to an unconditional write — losing a concurrent update is bad, dropping the observation
+ * entirely is worse.
+ */
+async function casUpdateField(client, key, field, merge) {
+  for (let attempt = 0; attempt < CAS_MAX_ATTEMPTS; attempt++) {
+    const currentRaw = await client.hget(key, field)
+    const nextRaw = await merge(currentRaw)
+
+    if (nextRaw === null || nextRaw === undefined) {
+      return false
+    }
+
+    const swapped = await client.eval(
+      CAS_HSET_SCRIPT,
+      1,
+      key,
+      field,
+      currentRaw === null || currentRaw === undefined ? '' : currentRaw,
+      nextRaw
+    )
+
+    if (Number(swapped) === 1) {
+      return true
     }
   }
 
-  const updatedMs = Date.parse(updatedAt)
-  if (Number.isNaN(updatedMs)) {
-    return {
-      resetAt: null,
-      remainingSeconds: null
-    }
+  const finalRaw = await merge(await client.hget(key, field))
+  if (finalRaw === null || finalRaw === undefined) {
+    return false
   }
 
-  const resetMs = updatedMs + resetAfterSeconds * 1000
+  logger.debug(`⚠️ CAS contention on ${key}#${field}, falling back to unconditional write`)
+  await client.hset(key, field, finalRaw)
+  return true
+}
+
+function parseStoredCodexSnapshot(raw) {
+  const parsed = parseJsonOrNull(raw)
+  if (!parsed || !Array.isArray(parsed.limits)) {
+    return null
+  }
+  return parsed
+}
+
+// Attach a live countdown derived from the absolute reset time. The countdown is never stored —
+// deriving it from a stored relative offset is what made old windows drift forward forever.
+function decorateCodexWindow(window, nowMs) {
+  if (!window) {
+    return null
+  }
+
+  const resetMs = window.resetAt ? Date.parse(window.resetAt) : NaN
+
   return {
-    resetAt: new Date(resetMs).toISOString(),
-    remainingSeconds: Math.max(0, Math.round((resetMs - Date.now()) / 1000))
+    usedPercent: toNumberOrNull(window.usedPercent),
+    windowMinutes: toNumberOrNull(window.windowMinutes),
+    resetAt: window.resetAt || null,
+    remainingSeconds: Number.isFinite(resetMs)
+      ? Math.max(0, Math.round((resetMs - nowMs) / 1000))
+      : null
+  }
+}
+
+// Migration path for accounts written before the snapshot rewrite. The old schema stored relative
+// reset offsets, so convert them against the timestamp they were captured with — once.
+function buildLegacyCodexSnapshot(accountData) {
+  const updatedAt = accountData.codexUsageUpdatedAt || null
+  const updatedMs = updatedAt ? Date.parse(updatedAt) : NaN
+
+  const buildWindow = (usedPercentRaw, resetAfterSecondsRaw, windowMinutesRaw) => {
+    const usedPercent = toNumberOrNull(usedPercentRaw)
+    const resetAfterSeconds = toNumberOrNull(resetAfterSecondsRaw)
+    const windowMinutes = toNumberOrNull(windowMinutesRaw)
+
+    if (usedPercent === null && resetAfterSeconds === null && windowMinutes === null) {
+      return null
+    }
+
+    const resetAt =
+      resetAfterSeconds !== null && Number.isFinite(updatedMs)
+        ? new Date(updatedMs + resetAfterSeconds * 1000).toISOString()
+        : null
+
+    return { usedPercent, windowMinutes, resetAt }
+  }
+
+  const primary = buildWindow(
+    accountData.codexPrimaryUsedPercent,
+    accountData.codexPrimaryResetAfterSeconds,
+    accountData.codexPrimaryWindowMinutes
+  )
+  const secondary = buildWindow(
+    accountData.codexSecondaryUsedPercent,
+    accountData.codexSecondaryResetAfterSeconds,
+    accountData.codexSecondaryWindowMinutes
+  )
+
+  if (!primary && !secondary) {
+    return null
+  }
+
+  return {
+    updatedAt,
+    source: 'legacy',
+    rateLimitReachedType: null,
+    limits: [
+      {
+        limitId: 'codex',
+        limitName: 'Codex',
+        meteredFeature: null,
+        capturedAt: updatedAt,
+        primary,
+        secondary,
+        primaryOverSecondaryPercent: toNumberOrNull(
+          accountData.codexPrimaryOverSecondaryLimitPercent
+        )
+      }
+    ]
   }
 }
 
 function buildCodexUsageSnapshot(accountData) {
-  const updatedAt = accountData.codexUsageUpdatedAt
-
-  const primaryUsedPercent = toNumberOrNull(accountData.codexPrimaryUsedPercent)
-  const primaryResetAfterSeconds = toNumberOrNull(accountData.codexPrimaryResetAfterSeconds)
-  const primaryWindowMinutes = toNumberOrNull(accountData.codexPrimaryWindowMinutes)
-  const secondaryUsedPercent = toNumberOrNull(accountData.codexSecondaryUsedPercent)
-  const secondaryResetAfterSeconds = toNumberOrNull(accountData.codexSecondaryResetAfterSeconds)
-  const secondaryWindowMinutes = toNumberOrNull(accountData.codexSecondaryWindowMinutes)
-  const overSecondaryPercent = toNumberOrNull(accountData.codexPrimaryOverSecondaryLimitPercent)
-
-  const hasPrimaryData =
-    primaryUsedPercent !== null ||
-    primaryResetAfterSeconds !== null ||
-    primaryWindowMinutes !== null
-  const hasSecondaryData =
-    secondaryUsedPercent !== null ||
-    secondaryResetAfterSeconds !== null ||
-    secondaryWindowMinutes !== null
-
-  if (!updatedAt && !hasPrimaryData && !hasSecondaryData) {
+  if (!accountData || typeof accountData !== 'object') {
     return null
   }
 
-  const primaryMeta = computeResetMeta(updatedAt, primaryResetAfterSeconds)
-  const secondaryMeta = computeResetMeta(updatedAt, secondaryResetAfterSeconds)
+  const stored =
+    parseStoredCodexSnapshot(accountData[CODEX_USAGE_SNAPSHOT_FIELD]) ||
+    buildLegacyCodexSnapshot(accountData)
+
+  if (!stored) {
+    return null
+  }
+
+  const now = Date.now()
+  const updatedMs = stored.updatedAt ? Date.parse(stored.updatedAt) : NaN
 
   return {
-    updatedAt,
-    primary: {
-      usedPercent: primaryUsedPercent,
-      resetAfterSeconds: primaryResetAfterSeconds,
-      windowMinutes: primaryWindowMinutes,
-      resetAt: primaryMeta.resetAt,
-      remainingSeconds: primaryMeta.remainingSeconds
-    },
-    secondary: {
-      usedPercent: secondaryUsedPercent,
-      resetAfterSeconds: secondaryResetAfterSeconds,
-      windowMinutes: secondaryWindowMinutes,
-      resetAt: secondaryMeta.resetAt,
-      remainingSeconds: secondaryMeta.remainingSeconds
-    },
-    primaryOverSecondaryPercent: overSecondaryPercent
+    updatedAt: stored.updatedAt || null,
+    source: stored.source || 'headers',
+    // Drives the upstream refresh cooldown. Survives header writes on purpose — see
+    // updateCodexUsageSnapshot.
+    whamFetchedAt: stored.whamFetchedAt || null,
+    rateLimitReachedType: stored.rateLimitReachedType || null,
+    // Surfaced so the UI can say "this is old" instead of presenting a frozen snapshot as live.
+    isStale: !Number.isFinite(updatedMs) || now - updatedMs > CODEX_USAGE_STALE_AFTER_MS,
+    limits: stored.limits.map((limit) => ({
+      limitId: limit.limitId,
+      limitName: limit.limitName || null,
+      meteredFeature: limit.meteredFeature || null,
+      capturedAt: limit.capturedAt || stored.updatedAt || null,
+      primary: decorateCodexWindow(limit.primary, now),
+      secondary: decorateCodexWindow(limit.secondary, now),
+      primaryOverSecondaryPercent: toNumberOrNull(limit.primaryOverSecondaryPercent)
+    }))
   }
+}
+
+function buildCodexAvailability(accountData) {
+  if (!accountData || typeof accountData !== 'object') {
+    return null
+  }
+  return parseJsonOrNull(accountData[CODEX_AVAILABILITY_FIELD])
 }
 
 // 刷新访问令牌
@@ -694,6 +863,7 @@ async function getAllAccounts() {
     const accountData = dataList[i]
     if (accountData && Object.keys(accountData).length > 0) {
       const codexUsage = buildCodexUsageSnapshot(accountData)
+      const codexAvailability = buildCodexAvailability(accountData)
 
       // 解密敏感数据（但不返回给前端）
       if (accountData.email) {
@@ -711,15 +881,12 @@ async function getAllAccounts() {
       delete accountData.accessToken
       delete accountData.refreshToken
       delete accountData.openaiOauth
-      delete accountData.codexPrimaryUsedPercent
-      delete accountData.codexPrimaryResetAfterSeconds
-      delete accountData.codexPrimaryWindowMinutes
-      delete accountData.codexSecondaryUsedPercent
-      delete accountData.codexSecondaryResetAfterSeconds
-      delete accountData.codexSecondaryWindowMinutes
-      delete accountData.codexPrimaryOverSecondaryLimitPercent
-      // 时间戳改由 codexUsage.updatedAt 暴露
-      delete accountData.codexUsageUpdatedAt
+      // 原始额度字段改由 codexUsage / codexAvailability 暴露
+      delete accountData[CODEX_USAGE_SNAPSHOT_FIELD]
+      delete accountData[CODEX_AVAILABILITY_FIELD]
+      for (const legacyField of LEGACY_CODEX_USAGE_FIELDS) {
+        delete accountData[legacyField]
+      }
 
       // 获取限流状态信息
       const rateLimitInfo = await getAccountRateLimitInfo(accountData.id)
@@ -776,7 +943,8 @@ async function getAllAccounts() {
               rateLimitResetAt: null,
               minutesRemaining: 0
             },
-        codexUsage
+        codexUsage,
+        codexAvailability
       })
     }
   }
@@ -794,6 +962,7 @@ async function getAccountOverview(accountId) {
   }
 
   const codexUsage = buildCodexUsageSnapshot(accountData)
+  const codexAvailability = buildCodexAvailability(accountData)
   const rateLimitInfo = await getAccountRateLimitInfo(accountId)
 
   if (accountData.proxy) {
@@ -821,6 +990,7 @@ async function getAccountOverview(accountId) {
       minutesRemaining: 0
     },
     codexUsage,
+    codexAvailability,
     scopes
   }
 }
@@ -1195,39 +1365,420 @@ async function updateAccountUsage(accountId, tokens = 0) {
 // 为了兼容性，保留recordUsage作为updateAccountUsage的别名
 const recordUsage = updateAccountUsage
 
-async function updateCodexUsageSnapshot(accountId, usageSnapshot) {
+function pickNumber(source, keys) {
+  if (!source || typeof source !== 'object') {
+    return null
+  }
+
+  for (const key of keys) {
+    const value = toNumberOrNull(source[key])
+    if (value !== null) {
+      return value
+    }
+  }
+
+  return null
+}
+
+function pickFirst(source, keys) {
+  if (!source || typeof source !== 'object') {
+    return undefined
+  }
+
+  for (const key of keys) {
+    if (source[key] !== undefined && source[key] !== null && source[key] !== '') {
+      return source[key]
+    }
+  }
+
+  return undefined
+}
+
+// The exact /wham/usage schema is documented but not verified against a live account, so every
+// field is read tolerantly across the plausible spellings rather than assumed.
+function normalizeWhamWindow(window, nowMs) {
+  if (!window || typeof window !== 'object') {
+    return null
+  }
+
+  const usedPercent = pickNumber(window, ['used_percent', 'usedPercent', 'utilization'])
+  const windowMinutes = pickNumber(window, [
+    'window_minutes',
+    'windowMinutes',
+    'window_size_minutes',
+    'windowSizeMinutes'
+  ])
+  const resetAt = resolveResetAt(
+    pickFirst(window, ['resets_at', 'reset_at', 'resetsAt', 'resetAt']),
+    pickFirst(window, [
+      'resets_in_seconds',
+      'reset_after_seconds',
+      'resetsInSeconds',
+      'resetAfterSeconds'
+    ]),
+    nowMs
+  )
+
+  if (usedPercent === null && windowMinutes === null && resetAt === null) {
+    return null
+  }
+
+  return { usedPercent, windowMinutes, resetAt }
+}
+
+/**
+ * Convert a /wham/usage payload into the canonical snapshot shape.
+ *
+ * The default bucket is pinned to `codex` so it lines up with the `x-codex-*` headers. Additional
+ * per-model buckets are keyed off `metered_feature` first — it is a machine identifier and is the
+ * likelier match for the header prefix — falling back to the human-readable `limit_name`.
+ */
+function normalizeWhamUsage(payload, { now = Date.now() } = {}) {
+  if (!payload || typeof payload !== 'object') {
+    return null
+  }
+
+  const capturedAt = new Date(now).toISOString()
+  const limits = []
+
+  const pushLimit = (limitId, limitName, meteredFeature, rateLimit) => {
+    const primary = normalizeWhamWindow(
+      pickFirst(rateLimit, ['primary_window', 'primaryWindow']),
+      now
+    )
+    const secondary = normalizeWhamWindow(
+      pickFirst(rateLimit, ['secondary_window', 'secondaryWindow']),
+      now
+    )
+
+    if (!primary && !secondary) {
+      return
+    }
+
+    limits.push({
+      limitId,
+      limitName: limitName || null,
+      meteredFeature: meteredFeature || null,
+      capturedAt,
+      primary,
+      secondary,
+      primaryOverSecondaryPercent: null
+    })
+  }
+
+  pushLimit('codex', 'Codex', null, pickFirst(payload, ['rate_limit', 'rateLimit']))
+
+  const additional = pickFirst(payload, ['additional_rate_limits', 'additionalRateLimits'])
+  if (Array.isArray(additional)) {
+    for (const entry of additional) {
+      if (!entry || typeof entry !== 'object') {
+        continue
+      }
+
+      const limitName = pickFirst(entry, ['limit_name', 'limitName']) || null
+      const meteredFeature = pickFirst(entry, ['metered_feature', 'meteredFeature']) || null
+      const limitId = normalizeLimitId(meteredFeature || limitName)
+      if (!limitId || limitId === 'codex') {
+        continue
+      }
+
+      pushLimit(
+        limitId,
+        limitName,
+        meteredFeature,
+        pickFirst(entry, ['rate_limit', 'rateLimit']) || entry
+      )
+    }
+  }
+
+  return {
+    capturedAt,
+    rateLimitReachedType:
+      pickFirst(payload, ['rate_limit_reached_type', 'rateLimitReachedType']) || null,
+    limits
+  }
+}
+
+/**
+ * Pull the authoritative quota snapshot from ChatGPT.
+ *
+ * Returns a normalized snapshot on success, or `null` when we reached no verdict — the caller must
+ * keep whatever it already has in that case. Only a 200 response is allowed to rewrite stored
+ * quota; treating a proxy outage or an expired token as "this account reports no usage" would
+ * blank the panel on a transient failure.
+ */
+async function fetchCodexUsage(accountId) {
+  let account = await getAccount(accountId)
+  if (!account) {
+    throw new Error('Account not found')
+  }
+
+  if (!account.accessToken) {
+    logger.debug(`📊 Skipping Codex usage fetch for ${accountId}: no access token`)
+    return null
+  }
+
+  if (isTokenExpired(account)) {
+    if (!account.refreshToken) {
+      logger.debug(
+        `📊 Skipping Codex usage fetch for ${accountId}: token expired, no refresh token`
+      )
+      return null
+    }
+    await refreshAccountToken(accountId)
+    account = await getAccount(accountId)
+    if (!account || !account.accessToken) {
+      return null
+    }
+  }
+
+  const accessToken = decrypt(account.accessToken)
+  if (!accessToken) {
+    logger.warn(`⚠️ Failed to decrypt access token for OpenAI account ${accountId}`)
+    return null
+  }
+
+  // Upstream gates model and quota visibility on client identity, so the usage call must present
+  // the same identity the relay uses for business traffic.
+  const identity = await codexClientIdentityService.getApplied()
+
+  const axiosConfig = {
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'chatgpt-account-id': account.accountId || account.chatgptUserId || accountId,
+      accept: 'application/json',
+      originator: identity.originator,
+      'user-agent': identity.userAgent,
+      version: identity.version
+    },
+    timeout: CODEX_USAGE_REQUEST_TIMEOUT_MS
+  }
+
+  const agent = ProxyHelper.createProxyAgent(account.proxy)
+  if (agent) {
+    axiosConfig.httpAgent = agent
+    axiosConfig.httpsAgent = agent
+    axiosConfig.proxy = false
+  }
+
+  try {
+    const response = await axios.get(CODEX_USAGE_ENDPOINT, axiosConfig)
+
+    if (response.status === 200 && response.data) {
+      if (!whamShapeLogged) {
+        whamShapeLogged = true
+        logger.debug(
+          `📊 First /wham/usage payload shape: ${JSON.stringify(response.data).slice(0, 2000)}`
+        )
+      }
+
+      const normalized = normalizeWhamUsage(response.data)
+
+      // A non-empty payload that yields no buckets means our field names did not match, not that
+      // upstream reports no limits. The documented schema is unverified, so we must not hand an
+      // empty "authoritative" snapshot to the writer — that would wipe every bucket, including the
+      // good data collected from business response headers. Treat it as no verdict instead.
+      if (!normalized || normalized.limits.length === 0) {
+        logger.warn(
+          `⚠️ /wham/usage returned a payload with no recognizable rate limit buckets for account ${accountId}; keeping the previous snapshot`
+        )
+        return null
+      }
+
+      return normalized
+    }
+
+    logger.warn(`⚠️ Unexpected /wham/usage status ${response.status} for account ${accountId}`)
+    return null
+  } catch (error) {
+    const status = error.response?.status
+
+    // The account simply cannot answer this question; keep the header-derived data we do have.
+    if (status === 403 || status === 404) {
+      logger.debug(`📊 /wham/usage unavailable (${status}) for account ${accountId}`)
+      return null
+    }
+
+    logger.error(
+      `❌ Failed to fetch Codex usage for account ${accountId}:`,
+      error.response?.data || error.message
+    )
+    throw error
+  }
+}
+
+/**
+ * Persist a Codex quota snapshot.
+ *
+ * Two sources feed this, with different authority:
+ *
+ * - `wham`   — a complete snapshot from /backend-api/wham/usage. Buckets and windows missing from
+ *              it no longer exist upstream, so `limits` is replaced wholesale.
+ * - `headers`— a sparse supplement scraped off a business response. Only the buckets this response
+ *              actually reported are replaced; buckets it did not mention are left alone for the
+ *              next full snapshot to reconcile. Within a reported bucket the window set *is*
+ *              replaced, which is what finally clears a secondary window upstream stopped sending.
+ *
+ * A response carrying no quota headers at all must not reach this function — that is "no
+ * information", not "everything disappeared".
+ */
+async function updateCodexUsageSnapshot(accountId, usageSnapshot, options = {}) {
+  const source = options.source === 'wham' ? 'wham' : 'headers'
+
   if (!usageSnapshot || typeof usageSnapshot !== 'object') {
     return
   }
 
-  const fieldMap = {
-    primaryUsedPercent: 'codexPrimaryUsedPercent',
-    primaryResetAfterSeconds: 'codexPrimaryResetAfterSeconds',
-    primaryWindowMinutes: 'codexPrimaryWindowMinutes',
-    secondaryUsedPercent: 'codexSecondaryUsedPercent',
-    secondaryResetAfterSeconds: 'codexSecondaryResetAfterSeconds',
-    secondaryWindowMinutes: 'codexSecondaryWindowMinutes',
-    primaryOverSecondaryPercent: 'codexPrimaryOverSecondaryLimitPercent'
-  }
-
-  const updates = {}
-  let hasPayload = false
-
-  for (const [key, field] of Object.entries(fieldMap)) {
-    if (usageSnapshot[key] !== undefined && usageSnapshot[key] !== null) {
-      updates[field] = String(usageSnapshot[key])
-      hasPayload = true
-    }
-  }
-
-  if (!hasPayload) {
+  const incomingLimits = Array.isArray(usageSnapshot.limits) ? usageSnapshot.limits : []
+  if (incomingLimits.length === 0 && source !== 'wham') {
     return
   }
 
-  updates.codexUsageUpdatedAt = new Date().toISOString()
+  const client = redisClient.getClientSafe()
+  const accountKey = `${OPENAI_ACCOUNT_KEY_PREFIX}${accountId}`
+
+  // Tracks whether the account still carried the pre-rewrite flat fields, so the cleanup only runs
+  // on the first write after migration instead of on every single response forever.
+  let migratedFromLegacy = false
+
+  await casUpdateField(client, accountKey, CODEX_USAGE_SNAPSHOT_FIELD, async (currentRaw) => {
+    const now = new Date().toISOString()
+    const existingStored = parseStoredCodexSnapshot(currentRaw)
+
+    let existing = existingStored
+    if (!existing) {
+      existing = buildLegacyCodexSnapshot(await client.hgetall(accountKey))
+      migratedFromLegacy = true
+    }
+
+    let limits = incomingLimits
+    let whamFetchedAt = now
+
+    if (source === 'headers') {
+      const incomingById = new Map(incomingLimits.map((limit) => [limit.limitId, limit]))
+      const merged = (existing?.limits || []).map(
+        (limit) => incomingById.get(limit.limitId) || limit
+      )
+      const seen = new Set(merged.map((limit) => limit.limitId))
+
+      for (const limit of incomingLimits) {
+        if (!seen.has(limit.limitId)) {
+          merged.push(limit)
+        }
+      }
+
+      limits = merged
+
+      // Header writes must NOT reset the /wham/usage cooldown clock. `updatedAt` moves on every
+      // write, so keying the refresh TTL off it would defeat the cache for any actively used
+      // account: business traffic would keep marking the snapshot "not fetched via wham", and
+      // every admin poll would fire a fresh upstream request.
+      whamFetchedAt = existing?.whamFetchedAt || null
+    }
+
+    return JSON.stringify({
+      updatedAt: now,
+      source,
+      // When the authoritative endpoint last answered, independent of `updatedAt`.
+      whamFetchedAt,
+      // Only a full snapshot can assert which limit was reached. A successful business response
+      // means we are not rate limited right now, so headers clear the flag rather than inherit it.
+      rateLimitReachedType: source === 'wham' ? usageSnapshot.rateLimitReachedType || null : null,
+      limits
+    })
+  })
+
+  if (migratedFromLegacy) {
+    await client.hdel(accountKey, ...LEGACY_CODEX_USAGE_FIELDS)
+  }
+}
+
+/**
+ * Atomic cooldown gate for /wham/usage.
+ *
+ * Timestamp comparison alone is not enough: several admin clients (or a polling script racing the
+ * admin page) can all read a stale snapshot in the same instant and each decide to fetch. SET NX
+ * makes "at most one upstream request per account per cooldown window" a hard guarantee rather
+ * than a best effort.
+ *
+ * The gate is deliberately NOT released on failure. A failing account should not be retried on
+ * every poll — that is exactly the periodic upstream traffic this is meant to prevent. The stored
+ * snapshot stays and simply ages into `isStale`.
+ *
+ * @returns {Promise<boolean>} true when the caller owns the right to fetch
+ */
+async function acquireCodexUsageFetchLock(accountId, ttlSeconds = 300) {
+  const client = redisClient.getClientSafe()
+  const result = await client.set(
+    `${CODEX_USAGE_FETCH_LOCK_PREFIX}${accountId}`,
+    new Date().toISOString(),
+    'EX',
+    Math.max(1, Math.floor(ttlSeconds)),
+    'NX'
+  )
+
+  return result === 'OK'
+}
+
+/**
+ * Extend an account's fetch cooldown past the normal window.
+ *
+ * Used when a fetch reached no verdict — a 403 (the account cannot answer this call at all), a
+ * proxy outage, a failed token refresh. Without this, such an account never records a
+ * `whamFetchedAt`, so every cooldown expiry would fire another doomed upstream request: a
+ * permanent fixed-interval beat against ChatGPT for an account that will never answer.
+ */
+async function extendCodexUsageFetchCooldown(accountId, ttlSeconds) {
+  const client = redisClient.getClientSafe()
+  await client.set(
+    `${CODEX_USAGE_FETCH_LOCK_PREFIX}${accountId}`,
+    new Date().toISOString(),
+    'EX',
+    Math.max(1, Math.floor(ttlSeconds))
+  )
+}
+
+/**
+ * Record the last observed upstream availability for an account, optionally scoped to one model.
+ *
+ * Kept separate from the quota snapshot on purpose: a quota refresh must not wipe a known capacity
+ * problem, and a capacity error must not be written as 100% usage.
+ */
+async function recordCodexAvailability(accountId, { model = null, state, detail = null } = {}) {
+  if (!state) {
+    return
+  }
 
   const client = redisClient.getClientSafe()
-  await client.hset(`${OPENAI_ACCOUNT_KEY_PREFIX}${accountId}`, updates)
+  const accountKey = `${OPENAI_ACCOUNT_KEY_PREFIX}${accountId}`
+  const normalizedDetail = detail || null
+
+  await casUpdateField(client, accountKey, CODEX_AVAILABILITY_FIELD, (currentRaw) => {
+    const existing = parseJsonOrNull(currentRaw) || {}
+    const current = model ? existing.models?.[model] : existing.account
+
+    // Steady state is the same verdict over and over — every successful request re-reports "ok".
+    // Rewriting an unchanged entry would put a Redis write on the hot path of every single
+    // request for no information gain, so only transitions are persisted.
+    if (current && current.state === state && (current.detail || null) === normalizedDetail) {
+      return null
+    }
+
+    const observedAt = new Date().toISOString()
+    const entry = { state, detail: normalizedDetail, observedAt }
+
+    const next = {
+      updatedAt: observedAt,
+      account: model ? existing.account || null : entry,
+      models: { ...(existing.models || {}) }
+    }
+
+    if (model) {
+      next.models[model] = entry
+    }
+
+    return JSON.stringify(next)
+  })
 }
 
 module.exports = {
@@ -1248,6 +1799,14 @@ module.exports = {
   updateAccountUsage,
   recordUsage, // 别名，指向updateAccountUsage
   updateCodexUsageSnapshot,
+  buildCodexUsageSnapshot,
+  buildCodexAvailability,
+  recordCodexAvailability,
+  fetchCodexUsage,
+  normalizeWhamUsage,
+  acquireCodexUsageFetchLock,
+  extendCodexUsageFetchCooldown,
+  CODEX_USAGE_STALE_AFTER_MS,
   encrypt,
   decrypt,
   encryptor // 暴露加密器以便测试和监控
