@@ -2,11 +2,17 @@
  * Codex 客户端身份服务
  *
  * 上游按客户端身份（originator + user-agent）判定模型可用性，缺任一个头新模型会返回
- * "Selected model is at capacity"。出站请求统一使用一个固定身份，避免多用户共用同一
- * 上游账号时客户端版本在请求间来回漂移。
+ * "Selected model is at capacity"。
+ *
+ * 出站身份按「透传优先、固定值兜底」解析：
+ * - 入站已经是可信 Codex 客户端（originator 与 UA 内嵌类型一致）时透传其自身身份。
+ *   上游抬高版本门槛时用户升级客户端即可自动跟上，不需要人工干预。
+ * - 其余客户端（OpenAI 兼容客户端、脚本等）用固定身份兜底，避免把 python-requests
+ *   之类的真实 UA 透到上游。
  *
  * 记录与应用分离：入站请求持续自动记录真实客户端身份（免费、无副作用），固定值只在
- * 人工触发时才提升。上游抬高版本门槛时，观测表里已经有更新的版本可供一键应用。
+ * 人工触发时才提升。注意观测表可能长期为空（部署里根本没有真 Codex CLI 打进来），
+ * 所以管理端必须同时支持手工指定，否则兜底值将永远无法更新。
  */
 
 const redis = require('../models/redis')
@@ -23,10 +29,12 @@ const OBSERVED_RETENTION_MS = 30 * 24 * 60 * 60 * 1000
 const OBSERVED_TTL_SECONDS = 60 * 24 * 60 * 60 // 60 天，长于保留期
 const OBSERVED_MAX_ENTRIES = 50
 
-// 兜底身份：观测表为空且从未应用过时使用
+// 兜底身份：观测表为空且从未应用过时使用。
+// 带上 (OS; arch) term 后缀以贴合真实 Codex CLI 的 UA 形状 —— 光秃秃的 `client/version`
+// 不是任何真实客户端会发出的样子，对按客户端身份做灰度的上游来说本身就可疑。
 const DEFAULT_IDENTITY = {
   originator: 'codex_cli_rs',
-  userAgent: 'codex_cli_rs/0.146.0',
+  userAgent: 'codex_cli_rs/0.146.0 (Ubuntu 24.04.0; x86_64) WindowsTerminal',
   version: '0.146.0'
 }
 
@@ -61,6 +69,28 @@ function parseField(field) {
   return {
     originator: field.slice(0, index),
     userAgent: field.slice(index + 1)
+  }
+}
+
+/**
+ * 解析入站客户端身份。originator 必须与 UA 内嵌的客户端类型一致，否则不是可信样本 ——
+ * 既不记录，也不透传。记录与透传共用这一个判定，避免两处规则漂移。
+ * @returns {{originator: string, userAgent: string, version: string}|null}
+ */
+function parseInboundIdentity(originator, userAgent) {
+  const parsed = parseUserAgent(userAgent)
+  if (!parsed || !originator || typeof originator !== 'string') {
+    return null
+  }
+
+  if (originator.trim().toLowerCase() !== parsed.clientType) {
+    return null
+  }
+
+  return {
+    originator: originator.trim().toLowerCase(),
+    userAgent: userAgent.trim(),
+    version: parsed.version
   }
 }
 
@@ -111,23 +141,36 @@ class CodexClientIdentityService {
   }
 
   /**
+   * 解析本次出站应使用的身份。
+   *
+   * 可信 Codex 客户端透传自身身份：它天然跟得上上游的版本门槛，而固定值只能靠人工提升，
+   * 迟早会落后于门槛并让全体用户同时收到 "Selected model is at capacity"。
+   * 其余客户端才回落到固定值。
+   *
+   * @returns {Promise<{originator: string, userAgent: string, version: string}>}
+   */
+  async resolveOutbound(originator, userAgent) {
+    const inbound = parseInboundIdentity(originator, userAgent)
+    if (inbound) {
+      return inbound
+    }
+
+    return this.getApplied()
+  }
+
+  /**
    * 记录一次观测到的入站客户端身份。
    * 由请求路径 fire-and-forget 调用，任何异常都不应影响转发。
    */
   async recordObserved(originator, userAgent) {
-    const parsed = parseUserAgent(userAgent)
-    if (!parsed || !originator || typeof originator !== 'string') {
-      return
-    }
-
-    // originator 必须与 UA 中的客户端类型一致，否则不是可信样本
-    if (originator.trim().toLowerCase() !== parsed.clientType) {
+    const inbound = parseInboundIdentity(originator, userAgent)
+    if (!inbound) {
       return
     }
 
     try {
       const client = redis.getClientSafe()
-      const field = buildField(originator.trim().toLowerCase(), userAgent.trim())
+      const field = buildField(inbound.originator, inbound.userAgent)
       const now = new Date().toISOString()
 
       const existingRaw = await client.hget(OBSERVED_KEY, field)
@@ -141,7 +184,7 @@ class CodexClientIdentityService {
       }
 
       const entry = {
-        version: parsed.version,
+        version: inbound.version,
         count: (existing?.count || 0) + 1,
         firstSeen: existing?.firstSeen || now,
         lastSeen: now

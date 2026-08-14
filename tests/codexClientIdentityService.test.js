@@ -77,8 +77,9 @@ describe('codexClientIdentityService', () => {
     it('falls back to the built-in identity when nothing was applied', async () => {
       const applied = await service.getApplied()
       expect(applied.originator).toBe('codex_cli_rs')
-      expect(applied.userAgent).toBe('codex_cli_rs/0.146.0')
       expect(applied.version).toBe('0.146.0')
+      // 兜底 UA 必须带 (OS; arch) term 后缀，贴合真实 Codex CLI 的形状
+      expect(applied.userAgent).toMatch(/^codex_cli_rs\/0\.146\.0 \(.+; .+\) \S+$/)
     })
 
     it('returns the applied identity once set', async () => {
@@ -92,6 +93,52 @@ describe('codexClientIdentityService', () => {
       expect(applied.userAgent).toBe('codex_cli_rs/0.150.0 (linux)')
       expect(applied.version).toBe('0.150.0')
       expect(applied.appliedBy).toBe('tester')
+    })
+  })
+
+  describe('resolveOutbound', () => {
+    it('passes a trustworthy Codex client through instead of the pinned value', async () => {
+      const identity = await service.resolveOutbound(
+        'codex_cli_rs',
+        'codex_cli_rs/0.152.0 (Ubuntu 24.04.0; x86_64) WindowsTerminal'
+      )
+
+      expect(identity.originator).toBe('codex_cli_rs')
+      expect(identity.userAgent).toBe(
+        'codex_cli_rs/0.152.0 (Ubuntu 24.04.0; x86_64) WindowsTerminal'
+      )
+      expect(identity.version).toBe('0.152.0')
+    })
+
+    it('passes through even when it is older than the pinned value', async () => {
+      await service.apply(
+        { originator: 'codex_cli_rs', userAgent: 'codex_cli_rs/0.160.0 (linux)' },
+        'tester'
+      )
+
+      // 透传的意义在于跟随真实客户端，不是取两者较新的那个
+      const identity = await service.resolveOutbound('codex_cli_rs', 'codex_cli_rs/0.120.0 (linux)')
+      expect(identity.version).toBe('0.120.0')
+    })
+
+    it('falls back to the pinned identity for non-Codex clients', async () => {
+      await service.apply(
+        { originator: 'codex_cli_rs', userAgent: 'codex_cli_rs/0.150.0 (linux)' },
+        'tester'
+      )
+
+      const identity = await service.resolveOutbound(undefined, 'python-requests/2.31.0')
+      expect(identity.userAgent).toBe('codex_cli_rs/0.150.0 (linux)')
+    })
+
+    it('falls back when originator contradicts the user-agent', async () => {
+      const identity = await service.resolveOutbound('codex_vscode', 'codex_cli_rs/0.152.0')
+      expect(identity.version).toBe('0.146.0')
+    })
+
+    it('falls back when the client sends a Codex UA but no originator', async () => {
+      const identity = await service.resolveOutbound('', 'codex_cli_rs/0.152.0 (linux)')
+      expect(identity.version).toBe('0.146.0')
     })
   })
 

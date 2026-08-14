@@ -406,17 +406,19 @@ const handleResponses = async (req, res) => {
     headers['accept'] = isStream ? 'text/event-stream' : 'application/json'
     headers['content-type'] = 'application/json'
 
-    // 先记录入站客户端的真实身份（异步、失败不影响转发）。
-    // 出站会被固定值覆盖，所以这里是采集真实 Codex 版本的唯一时机。
+    // 记录入站客户端的真实身份（异步、失败不影响转发），用于管理端展示可选版本。
     codexClientIdentityService
       .recordObserved(incoming['originator'], incoming['user-agent'])
       .catch(() => {})
 
     // Codex 客户端身份头。上游按客户端身份判定模型可用性，实测 originator 和 user-agent
     // 必须同时存在，缺任意一个新模型都会返回 "Selected model is at capacity"。
-    // 统一使用固定身份而非透传，避免多用户共用同一上游账号时客户端版本来回漂移。
-    // version 同步覆盖，保持与 UA 内嵌版本一致。
-    const codexIdentity = await codexClientIdentityService.getApplied()
+    // 真 Codex 客户端透传自身身份（自动跟上游版本门槛），其余客户端用固定值兜底，
+    // 避免把 python-requests 之类的真实 UA 透到上游。version 同步覆盖，与 UA 内嵌版本一致。
+    const codexIdentity = await codexClientIdentityService.resolveOutbound(
+      incoming['originator'],
+      incoming['user-agent']
+    )
     headers['originator'] = codexIdentity.originator
     headers['user-agent'] = codexIdentity.userAgent
     headers['version'] = codexIdentity.version

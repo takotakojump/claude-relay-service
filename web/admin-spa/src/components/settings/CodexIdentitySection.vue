@@ -42,7 +42,11 @@
     <div
       class="mb-4 rounded-lg border border-gray-200 bg-white/70 p-3 text-xs leading-relaxed text-gray-600 dark:border-gray-700 dark:bg-gray-800/40 dark:text-gray-400"
     >
-      <p>出站请求统一使用上面这个固定身份，避免多个用户共用同一上游账号时客户端版本来回漂移。</p>
+      <p>
+        真实 Codex
+        客户端会透传自身身份，出站自动跟上它的版本。上面这个固定身份只用于其余客户端（OpenAI
+        兼容客户端、脚本等）兜底。
+      </p>
       <p class="mt-1">
         下方列表是从入站请求中自动采样到的真实客户端身份。上游可能对旧版本设门槛，届时新模型会报
         <code>Selected model is at capacity</code>，回到这里挑一条更新的版本应用即可。
@@ -50,6 +54,41 @@
       <p class="mt-1">
         建议参考「次数」和「最后出现」再决定 —— 偶尔冒出来一次的版本未必可靠。超过 30
         天没再出现的记录会被自动清理。
+      </p>
+      <p class="mt-1">
+        如果部署里没有真 Codex CLI 打进来，列表会一直为空 —— 这时用下面的手工指定直接填写。
+      </p>
+    </div>
+
+    <!-- 手工指定：观测表可能长期为空，必须留一个不依赖采样的入口 -->
+    <div
+      class="mb-4 rounded-lg border border-gray-200 bg-white/70 p-3 dark:border-gray-700 dark:bg-gray-800/40"
+    >
+      <p class="mb-2 text-xs font-medium text-gray-600 dark:text-gray-400">手工指定固定身份</p>
+      <div class="flex flex-col gap-2 sm:flex-row">
+        <input
+          v-model="manualUserAgent"
+          class="min-w-0 flex-1 rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-700 placeholder-gray-400 focus:border-emerald-500 focus:outline-none dark:border-gray-600 dark:bg-gray-900 dark:text-gray-200"
+          placeholder="codex_cli_rs/0.152.0 (Ubuntu 24.04.0; x86_64) WindowsTerminal"
+          @keyup.enter="applyManual"
+        />
+        <input
+          v-model="manualOriginator"
+          class="rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-700 placeholder-gray-400 focus:border-emerald-500 focus:outline-none dark:border-gray-600 dark:bg-gray-900 dark:text-gray-200 sm:w-52"
+          placeholder="originator（留空自动推断）"
+          @keyup.enter="applyManual"
+        />
+        <button
+          class="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50"
+          :disabled="applying || !manualUserAgent.trim()"
+          @click="applyManual"
+        >
+          应用
+        </button>
+      </div>
+      <p class="mt-2 text-xs text-gray-500 dark:text-gray-500">
+        照真实客户端的 UA 形状填写（<code>codex --version</code> 可查版本）；originator 留空时按
+        User-Agent 前缀自动推断。
       </p>
     </div>
 
@@ -117,10 +156,15 @@ import { ref, onMounted } from 'vue'
 import { getCodexClientIdentityApi, applyCodexClientIdentityApi } from '@/utils/http_apis'
 import { showToast } from '@/utils/tools'
 
+// UA 形态与后端 CODEX_UA_PATTERN 保持一致，仅用于从 UA 推断 originator
+const CODEX_UA_PATTERN = /^(codex_vscode|codex_cli_rs|codex_exec)\//i
+
 const loading = ref(false)
 const applying = ref(false)
 const applied = ref({})
 const observed = ref([])
+const manualUserAgent = ref('')
+const manualOriginator = ref('')
 
 function formatTime(value) {
   if (!value) {
@@ -158,11 +202,13 @@ async function submitApply(payload) {
       applied.value = result.applied
       showToast(`已应用 ${result.applied.userAgent}`, 'success')
       await load()
-    } else {
-      showToast(result.message || '应用失败', 'error')
+      return true
     }
+    showToast(result.message || '应用失败', 'error')
+    return false
   } catch (error) {
     showToast(error.message || '应用失败', 'error')
+    return false
   } finally {
     applying.value = false
   }
@@ -170,6 +216,27 @@ async function submitApply(payload) {
 
 function applyOne(item) {
   return submitApply({ originator: item.originator, userAgent: item.userAgent })
+}
+
+async function applyManual() {
+  const userAgent = manualUserAgent.value.trim()
+  if (!userAgent || applying.value) {
+    return
+  }
+
+  const originator =
+    manualOriginator.value.trim().toLowerCase() ||
+    (userAgent.match(CODEX_UA_PATTERN)?.[1] || '').toLowerCase()
+
+  if (!originator) {
+    showToast('无法从 User-Agent 推断 originator，请手动填写', 'error')
+    return
+  }
+
+  if (await submitApply({ originator, userAgent })) {
+    manualUserAgent.value = ''
+    manualOriginator.value = ''
+  }
 }
 
 onMounted(load)

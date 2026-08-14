@@ -98,6 +98,7 @@ jest.mock('../src/utils/requestDetailHelper', () => ({
 
 jest.mock('../src/services/codexClientIdentityService', () => ({
   getApplied: jest.fn(),
+  resolveOutbound: jest.fn(),
   recordObserved: jest.fn(() => Promise.resolve())
 }))
 
@@ -184,11 +185,13 @@ describe('openai responses payload toggles', () => {
 
     openaiResponsesRelayService.handleRequest.mockResolvedValue({ ok: true })
     openaiAccountService.decrypt.mockReturnValue('decrypted-token')
-    codexClientIdentityService.getApplied.mockResolvedValue({
+    const identity = {
       originator: 'codex_cli_rs',
-      userAgent: 'codex_cli_rs/0.146.0',
+      userAgent: 'codex_cli_rs/0.146.0 (Ubuntu 24.04.0; x86_64) WindowsTerminal',
       version: '0.146.0'
-    })
+    }
+    codexClientIdentityService.getApplied.mockResolvedValue(identity)
+    codexClientIdentityService.resolveOutbound.mockResolvedValue(identity)
   })
 
   test('keeps standard responses payload unchanged for openai-responses when both toggles are off', async () => {
@@ -562,9 +565,15 @@ describe('openai responses payload toggles', () => {
 
 describe('openai responses codex client identity headers', () => {
   const CODEX_UA = 'codex_cli_rs/0.150.0 (x86_64-unknown-linux-gnu)'
+  // 真 Codex 客户端透传自身身份时，服务层解析出的结果
+  const CLIENT_IDENTITY = {
+    originator: 'codex_cli_rs',
+    userAgent: CODEX_UA,
+    version: '0.150.0'
+  }
   const PINNED = {
     originator: 'codex_cli_rs',
-    userAgent: 'codex_cli_rs/0.146.0',
+    userAgent: 'codex_cli_rs/0.146.0 (Ubuntu 24.04.0; x86_64) WindowsTerminal',
     version: '0.146.0'
   }
 
@@ -592,6 +601,9 @@ describe('openai responses codex client identity headers', () => {
       headers: {}
     })
     codexClientIdentityService.getApplied.mockResolvedValue(PINNED)
+    // 解析规则本身由 codexClientIdentityService 的单测覆盖；这里只关心路由如何使用它的返回值，
+    // 所以默认按「回落到固定值」解析，需要透传的用例自行覆盖。
+    codexClientIdentityService.resolveOutbound.mockResolvedValue(PINNED)
   })
 
   function codexReq(label) {
@@ -605,16 +617,27 @@ describe('openai responses codex client identity headers', () => {
     return req
   }
 
-  test('sends the pinned identity instead of forwarding the client one', async () => {
-    await openaiRoutes.handleResponses(codexReq('pinned'), createRes())
+  test('hands the inbound identity to the resolver', async () => {
+    await openaiRoutes.handleResponses(codexReq('resolve-args'), createRes())
+
+    expect(codexClientIdentityService.resolveOutbound).toHaveBeenCalledWith(
+      'codex_cli_rs',
+      CODEX_UA
+    )
+  })
+
+  test('forwards a real Codex client own identity instead of the pinned value', async () => {
+    codexClientIdentityService.resolveOutbound.mockResolvedValue(CLIENT_IDENTITY)
+
+    await openaiRoutes.handleResponses(codexReq('passthrough'), createRes())
 
     const headers = sentHeaders()
-    expect(headers['originator']).toBe(PINNED.originator)
-    expect(headers['user-agent']).toBe(PINNED.userAgent)
-    // version 同步覆盖，保持与固定 UA 内嵌版本一致
-    expect(headers['version']).toBe(PINNED.version)
-    // 客户端真实身份不再出现在出站请求里
-    expect(headers['user-agent']).not.toBe(CODEX_UA)
+    expect(headers['originator']).toBe(CLIENT_IDENTITY.originator)
+    expect(headers['user-agent']).toBe(CODEX_UA)
+    // version 与 UA 内嵌版本一致，不保留客户端自己发来的 version 头
+    expect(headers['version']).toBe(CLIENT_IDENTITY.version)
+    // 真客户端不该被降级成陈旧的固定值 —— 那正是 at capacity 的成因
+    expect(headers['user-agent']).not.toBe(PINNED.userAgent)
   })
 
   test('records the real inbound client identity before overwriting it', async () => {
@@ -623,7 +646,7 @@ describe('openai responses codex client identity headers', () => {
     expect(codexClientIdentityService.recordObserved).toHaveBeenCalledWith('codex_cli_rs', CODEX_UA)
   })
 
-  test('sends the pinned identity for non-Codex clients too', async () => {
+  test('falls back to the pinned identity for non-Codex clients', async () => {
     const req = createReq({
       userAgent: 'python-requests/2.31.0',
       body: { model: 'gpt-5.6-sol', prompt_cache_key: 'non-codex', stream: false },
@@ -636,11 +659,12 @@ describe('openai responses codex client identity headers', () => {
     const headers = sentHeaders()
     expect(headers['originator']).toBe(PINNED.originator)
     expect(headers['user-agent']).toBe(PINNED.userAgent)
+    // 客户端自报的 version 不能漏到上游，否则会与固定 UA 内嵌版本矛盾
     expect(headers['version']).toBe(PINNED.version)
   })
 
   test('reflects a newly applied identity', async () => {
-    codexClientIdentityService.getApplied.mockResolvedValue({
+    codexClientIdentityService.resolveOutbound.mockResolvedValue({
       originator: 'codex_cli_rs',
       userAgent: 'codex_cli_rs/0.152.0 (linux)',
       version: '0.152.0'
@@ -653,7 +677,7 @@ describe('openai responses codex client identity headers', () => {
     expect(headers['version']).toBe('0.152.0')
   })
 
-  test('also pins the identity on the compact route', async () => {
+  test('also resolves the identity on the compact route', async () => {
     const req = createReq({
       path: '/v1/responses/compact',
       userAgent: CODEX_UA,
