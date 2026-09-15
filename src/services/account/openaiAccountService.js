@@ -36,6 +36,12 @@ const CODEX_AVAILABILITY_FIELD = 'codexAvailability'
 // Cooldown gate keeping /wham/usage to at most one request per account per window
 const CODEX_USAGE_FETCH_LOCK_PREFIX = 'openai:account:codex_usage_fetch:'
 
+// Short cooldown for upstream capacity errors ("Selected model is at capacity").
+// Deliberately separate from the rate limit flag: a capacity blip is not an exhausted quota, so it
+// must not park the account for a whole quota window. It only has to step aside long enough for the
+// scheduler to hand the next request to a different account.
+const CODEX_OVERLOAD_COOLDOWN_PREFIX = 'openai:account:codex_overloaded:'
+
 /**
  * Compare-and-set on a single hash field.
  *
@@ -1739,6 +1745,33 @@ async function extendCodexUsageFetchCooldown(accountId, ttlSeconds) {
 }
 
 /**
+ * Park an account for a short while after an upstream capacity error.
+ *
+ * Callers must not use the rate limit path for this: marking a capacity blip as rate limited is
+ * what makes a temporary upstream hiccup look like a burned weekly allowance.
+ */
+async function markAccountOverloaded(accountId, ttlSeconds = 60) {
+  const client = redisClient.getClientSafe()
+  await client.set(
+    `${CODEX_OVERLOAD_COOLDOWN_PREFIX}${accountId}`,
+    new Date().toISOString(),
+    'EX',
+    Math.max(1, Math.floor(ttlSeconds))
+  )
+}
+
+async function isAccountOverloaded(accountId) {
+  const client = redisClient.getClientSafe()
+  const value = await client.get(`${CODEX_OVERLOAD_COOLDOWN_PREFIX}${accountId}`)
+  return Boolean(value)
+}
+
+async function clearAccountOverloaded(accountId) {
+  const client = redisClient.getClientSafe()
+  await client.del(`${CODEX_OVERLOAD_COOLDOWN_PREFIX}${accountId}`)
+}
+
+/**
  * Record the last observed upstream availability for an account, optionally scoped to one model.
  *
  * Kept separate from the quota snapshot on purpose: a quota refresh must not wipe a known capacity
@@ -1806,6 +1839,9 @@ module.exports = {
   normalizeWhamUsage,
   acquireCodexUsageFetchLock,
   extendCodexUsageFetchCooldown,
+  markAccountOverloaded,
+  isAccountOverloaded,
+  clearAccountOverloaded,
   CODEX_USAGE_STALE_AFTER_MS,
   encrypt,
   decrypt,

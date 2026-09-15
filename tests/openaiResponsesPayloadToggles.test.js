@@ -42,7 +42,9 @@ jest.mock('../src/services/account/openaiAccountService', () => ({
   decrypt: jest.fn(),
   isTokenExpired: jest.fn(() => false),
   refreshAccountToken: jest.fn(),
-  updateCodexUsageSnapshot: jest.fn()
+  updateCodexUsageSnapshot: jest.fn(),
+  recordCodexAvailability: jest.fn(),
+  markAccountOverloaded: jest.fn()
 }))
 
 jest.mock('../src/services/account/openaiResponsesAccountService', () => ({
@@ -96,11 +98,17 @@ jest.mock('../src/utils/requestDetailHelper', () => ({
   extractOpenAICacheReadTokens: jest.fn(() => 0)
 }))
 
-jest.mock('../src/services/codexClientIdentityService', () => ({
-  getApplied: jest.fn(),
-  resolveOutbound: jest.fn(),
-  recordObserved: jest.fn(() => Promise.resolve())
-}))
+jest.mock('../src/services/codexClientIdentityService', () => {
+  // isCodexClientUserAgent 用真实实现：路由靠它判定"这是不是真 Codex 客户端"，
+  // 桩掉它等于把这次要验证的行为一起桩掉了。
+  const actual = jest.requireActual('../src/services/codexClientIdentityService')
+  return {
+    getApplied: jest.fn(),
+    resolveOutbound: jest.fn(),
+    recordObserved: jest.fn(() => Promise.resolve()),
+    isCodexClientUserAgent: actual.isCodexClientUserAgent
+  }
+})
 
 const unifiedOpenAIScheduler = require('../src/services/scheduler/unifiedOpenAIScheduler')
 const axios = require('axios')
@@ -238,7 +246,8 @@ describe('openai responses payload toggles', () => {
     expect(req.body.model).toBe('gpt-5')
     expect(req.body.instructions).toBe(openaiRoutes.CODEX_CLI_INSTRUCTIONS)
     expect(req.body.temperature).toBeUndefined()
-    expect(req.body.service_tier).toBeUndefined()
+    // service_tier 是加速模式开关，适配层必须放行，否则包装层客户端永远切不了 fast
+    expect(req.body.service_tier).toBe('priority')
     expect(unifiedOpenAIScheduler.selectAccountForApiKey).toHaveBeenCalledWith(
       req.apiKey,
       createHash('session-b'),
@@ -473,7 +482,7 @@ describe('openai responses payload toggles', () => {
     expect(apiKeyService.recordUsage.mock.calls[0][8]).toBe('priority')
   })
 
-  test('records null service_tier after Codex adaptation removes it for openai accounts', async () => {
+  test('keeps service_tier through Codex adaptation so fast mode survives', async () => {
     unifiedOpenAIScheduler.selectAccountForApiKey.mockResolvedValue({
       accountId: 'openai-1',
       accountType: 'openai'
@@ -509,10 +518,10 @@ describe('openai responses payload toggles', () => {
 
     await openaiRoutes.handleResponses(req, createRes())
 
-    expect(req.body.service_tier).toBeUndefined()
-    expect(req._serviceTier).toBeNull()
+    expect(req.body.service_tier).toBe('priority')
+    expect(req._serviceTier).toBe('priority')
     expect(apiKeyService.recordUsage).toHaveBeenCalled()
-    expect(apiKeyService.recordUsage.mock.calls[0][8]).toBeNull()
+    expect(apiKeyService.recordUsage.mock.calls[0][8]).toBe('priority')
   })
 
   test('captures the post-rule service_tier before relaying openai-responses requests', async () => {
@@ -699,5 +708,148 @@ describe('openai responses codex client identity headers', () => {
 
     expect(axios.post).toHaveBeenCalled()
     expect(sentHeaders()['user-agent']).toBe(PINNED.userAgent)
+  })
+})
+
+describe('codex capacity failover', () => {
+  const CAPACITY_BODY = {
+    error: { message: 'Selected model is at capacity. Please try a different model.' }
+  }
+
+  function capacityReq(sessionKey) {
+    return createReq({
+      userAgent: 'codex_cli_rs/0.146.0 (Ubuntu 24.04.0; x86_64) WindowsTerminal',
+      body: { model: 'gpt-5.6-sol', prompt_cache_key: sessionKey, stream: false }
+    })
+  }
+
+  beforeEach(() => {
+    jest.clearAllMocks()
+
+    unifiedOpenAIScheduler.selectAccountForApiKey.mockResolvedValue({
+      accountId: 'openai-1',
+      accountType: 'openai'
+    })
+    unifiedOpenAIScheduler.isAccountRateLimited.mockResolvedValue(false)
+    openaiAccountService.getAccount.mockResolvedValue({
+      id: 'openai-1',
+      name: 'OpenAI Account',
+      accessToken: 'encrypted-token',
+      accountId: 'chatgpt-account-1'
+    })
+
+    const identity = {
+      originator: 'codex_cli_rs',
+      userAgent: 'codex_cli_rs/0.146.0 (Ubuntu 24.04.0; x86_64) WindowsTerminal',
+      version: '0.146.0'
+    }
+    codexClientIdentityService.getApplied.mockResolvedValue(identity)
+    codexClientIdentityService.resolveOutbound.mockResolvedValue(identity)
+  })
+
+  test('parks the account and retries on another one instead of passing capacity through', async () => {
+    axios.post
+      .mockResolvedValueOnce({ status: 429, data: CAPACITY_BODY, headers: {} })
+      .mockResolvedValueOnce({
+        status: 200,
+        data: { model: 'gpt-5', usage: { input_tokens: 10, output_tokens: 4, total_tokens: 14 } },
+        headers: {}
+      })
+
+    const res = createRes()
+    await openaiRoutes.handleResponses(capacityReq('capacity-retry'), res)
+
+    expect(axios.post).toHaveBeenCalledTimes(2)
+    expect(openaiAccountService.markAccountOverloaded).toHaveBeenCalledWith('openai-1', 60)
+    // 容量问题绝不能记成额度耗尽，否则一次抖动就把账号排除掉一整个配额窗口
+    expect(unifiedOpenAIScheduler.markAccountRateLimited).not.toHaveBeenCalled()
+    expect(res.statusCode).toBe(200)
+  })
+
+  test('still marks a real quota 429 as rate limited and does not retry', async () => {
+    axios.post.mockResolvedValue({
+      status: 429,
+      data: { error: { message: 'You have hit your usage limit.', resets_in_seconds: 3600 } },
+      headers: {}
+    })
+
+    await openaiRoutes.handleResponses(capacityReq('real-quota'), createRes())
+
+    expect(axios.post).toHaveBeenCalledTimes(1)
+    expect(unifiedOpenAIScheduler.markAccountRateLimited).toHaveBeenCalled()
+    expect(openaiAccountService.markAccountOverloaded).not.toHaveBeenCalled()
+  })
+
+  test('gives up after the attempt budget and returns the upstream error', async () => {
+    axios.post.mockResolvedValue({ status: 429, data: CAPACITY_BODY, headers: {} })
+
+    const res = createRes()
+    await openaiRoutes.handleResponses(capacityReq('capacity-exhausted'), res)
+
+    expect(axios.post).toHaveBeenCalledTimes(3)
+    expect(res.statusCode).toBe(429)
+    expect(res.payload).toEqual(CAPACITY_BODY)
+  })
+
+  test('classifies a non-429 capacity error and retries as well', async () => {
+    axios.post
+      .mockResolvedValueOnce({ status: 500, data: CAPACITY_BODY, headers: {} })
+      .mockResolvedValueOnce({
+        status: 200,
+        data: { model: 'gpt-5', usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } },
+        headers: {}
+      })
+
+    const res = createRes()
+    await openaiRoutes.handleResponses(capacityReq('capacity-500'), res)
+
+    expect(axios.post).toHaveBeenCalledTimes(2)
+    expect(openaiAccountService.markAccountOverloaded).toHaveBeenCalledWith('openai-1', 60)
+    expect(res.statusCode).toBe(200)
+  })
+})
+
+describe('codex fast mode service_tier whitelist', () => {
+  beforeEach(() => {
+    jest.clearAllMocks()
+    unifiedOpenAIScheduler.selectAccountForApiKey.mockResolvedValue({
+      accountId: 'resp-1',
+      accountType: 'openai-responses'
+    })
+    openaiResponsesAccountService.getAccount.mockResolvedValue({
+      id: 'resp-1',
+      name: 'Responses Account',
+      apiKey: 'encrypted'
+    })
+  })
+
+  async function tierAfterAdaptation(tier) {
+    const req = createReq({ body: { model: 'gpt-5-2025-08-07', service_tier: tier } })
+    await openaiRoutes.handleResponses(req, createRes())
+    return req.body.service_tier
+  }
+
+  test.each(['fast', 'priority'])(
+    'keeps the %s tier so fast mode reaches upstream',
+    async (tier) => {
+      expect(await tierAfterAdaptation(tier)).toBe(tier)
+    }
+  )
+
+  test.each(['auto', 'default', 'flex', 'scale'])(
+    'still strips the unrelated %s tier',
+    async (tier) => {
+      // d11b7c5e 把 service_tier 整个剔除是因为后端不收多余参数。
+      // 白名单只为加速模式开口子，其余取值必须维持原来的剔除行为。
+      expect(await tierAfterAdaptation(tier)).toBeUndefined()
+    }
+  )
+
+  test('normalizes casing and whitespace before matching', async () => {
+    expect(await tierAfterAdaptation('  Fast ')).toBe('fast')
+  })
+
+  test('drops a non-string tier instead of forwarding it', async () => {
+    expect(await tierAfterAdaptation(123)).toBeUndefined()
   })
 })

@@ -22,8 +22,19 @@ const {
 const requestBodyRuleService = require('../services/requestBodyRuleService')
 const serviceLimitService = require('../services/serviceLimitService')
 const codexClientIdentityService = require('../services/codexClientIdentityService')
+const codexDiagnosticLogService = require('../services/codexDiagnosticLogService')
 const { parseCodexRateLimitHeaders } = require('../utils/codexRateLimitHeaders')
-const { classifyCodexUpstreamError, isQuotaExhausted } = require('../utils/codexErrorClassifier')
+const {
+  classifyCodexUpstreamError,
+  isQuotaExhausted,
+  CODEX_AVAILABILITY_STATES
+} = require('../utils/codexErrorClassifier')
+
+// 容量错误换号重试的参数。冷却要短：容量问题几十秒就可能恢复，用限流那种长冷却会把
+// 一次上游抖动变成整轮排除。
+const MAX_CODEX_ATTEMPTS = 3
+const CODEX_OVERLOAD_COOLDOWN_SECONDS = 60
+const RETRY_ON_CAPACITY = Symbol('retry-on-capacity')
 
 // Codex CLI 系统提示词（非 Codex CLI 客户端请求时注入，统一端点也使用）
 const CODEX_CLI_INSTRUCTIONS =
@@ -95,7 +106,13 @@ function normalizeGpt5ModelForCodex(body = {}) {
   return compatibleModel
 }
 
+// Codex 加速模式的档位取值。只有这两个会被放行 —— d11b7c5e 当初把 service_tier 整个加进
+// 剔除列表，是因为 Codex 后端不接受多余参数；白名单既保住加速模式，又不把 auto / default /
+// flex 这些无关取值重新透传回上游。
+const ALLOWED_SERVICE_TIERS = new Set(['fast', 'priority'])
+
 function applyCodexCliAdaptation(body = {}) {
+  // service_tier 不在下面的删除列表里，改为在后面按白名单过滤。
   const fieldsToRemove = [
     'temperature',
     'top_p',
@@ -104,7 +121,6 @@ function applyCodexCliAdaptation(body = {}) {
     'text_formatting',
     'truncation',
     'text',
-    'service_tier',
     'prompt_cache_retention',
     'safety_identifier'
   ]
@@ -112,6 +128,16 @@ function applyCodexCliAdaptation(body = {}) {
   fieldsToRemove.forEach((field) => {
     delete body[field]
   })
+
+  // 大小写和空白由客户端决定，归一后再比对；不在白名单内的一律剔除。
+  const requestedTier =
+    typeof body.service_tier === 'string' ? body.service_tier.trim().toLowerCase() : null
+
+  if (requestedTier && ALLOWED_SERVICE_TIERS.has(requestedTier)) {
+    body.service_tier = requestedTier
+  } else if ('service_tier' in body) {
+    delete body.service_tier
+  }
 
   body.instructions = CODEX_CLI_INSTRUCTIONS
 }
@@ -267,7 +293,7 @@ async function getOpenAIAuthToken(apiKeyData, sessionId = null, requestedModel =
 }
 
 // 主处理函数，供两个路由共享
-const handleResponses = async (req, res) => {
+const handleResponsesAttempt = async (req, res, canRetry = false) => {
   let upstream = null
   let accountId = null
   let accountType = 'openai'
@@ -294,10 +320,10 @@ const handleResponses = async (req, res) => {
     }
 
     // 判断是否为 Codex CLI 的请求（基于 User-Agent）
-    // 支持: codex_vscode, codex_cli_rs, codex_exec (非交互式/脚本模式)
+    // 客户端名单集中在 codexClientIdentityService，这里不再自己维护一份正则 —— 之前两处各写
+    // 一份且都只认下划线写法，把 codex-tui / Codex Desktop 这些真客户端判成了陌生客户端。
     const userAgent = req.headers['user-agent'] || ''
-    const codexCliPattern = /^(codex_vscode|codex_cli_rs|codex_exec)\/[\d.]+/i
-    const isCodexCLI = codexCliPattern.test(userAgent)
+    const isCodexCLI = codexClientIdentityService.isCodexClientUserAgent(userAgent)
 
     const standardResponsesRoute = isStandardResponsesRoute(req)
     const compactRoute = isCompactResponsesRoute(req)
@@ -542,6 +568,13 @@ const handleResponses = async (req, res) => {
         )
       }
 
+      // 容量问题不是额度耗尽：给账号打个短冷却让调度器跳过它，然后换号重发，
+      // 而不是把上游原文直接透给用户。
+      if (classification.state === CODEX_AVAILABILITY_STATES.SERVER_OVERLOADED && canRetry) {
+        await openaiAccountService.markAccountOverloaded(accountId, CODEX_OVERLOAD_COOLDOWN_SECONDS)
+        return RETRY_ON_CAPACITY
+      }
+
       // 返回错误响应给客户端
       const errorResponse = errorData || {
         error: {
@@ -669,15 +702,22 @@ const handleResponses = async (req, res) => {
       }).catch(() => {})
     } else {
       // 其余非 2xx：分类后记录，用于区分容量问题、模型权限问题和额度问题
-      await recordCodexAvailability(
-        accountId,
-        upstreamRequestedModel,
-        classifyCodexUpstreamError(
-          upstream.status,
-          isStream ? null : upstream.data,
-          upstream.headers
-        )
+      const classification = classifyCodexUpstreamError(
+        upstream.status,
+        isStream ? null : upstream.data,
+        upstream.headers
       )
+      await recordCodexAvailability(accountId, upstreamRequestedModel, classification)
+
+      // 流式分支拿不到错误体（提前消费掉流后面就没法透传了），所以流式的容量错误
+      // 主要由上面的 429 分支兜住 —— 那里本来就会把流读完再解析。
+      if (classification.state === CODEX_AVAILABILITY_STATES.SERVER_OVERLOADED && canRetry) {
+        await openaiAccountService.markAccountOverloaded(accountId, CODEX_OVERLOAD_COOLDOWN_SECONDS)
+        if (isStream && typeof upstream.data?.destroy === 'function') {
+          upstream.data.destroy()
+        }
+        return RETRY_ON_CAPACITY
+      }
     }
 
     res.status(upstream.status)
@@ -815,6 +855,36 @@ const handleResponses = async (req, res) => {
             `🚫 Rate limit detected in stream, resets in ${rateLimitResetsInSeconds} seconds`
           )
         }
+        return
+      }
+
+      // 上游会用 HTTP 200 + 流内 error 帧下发容量类错误（"Selected model is at capacity"）。
+      // 这类失败此前在日志里完全不可见：流式响应走 res.write 裸管道，从不调用 res.json()，
+      // 所以访问日志的 res 字段永远为空、状态码永远是 200。没有这条记录就无法判断这类错误
+      // 到底有没有发生、发生在哪个账号和哪个模型上。
+      const streamError =
+        eventData.error || (eventData.type === 'response.failed' && eventData.response?.error)
+
+      if (streamError) {
+        // 传 null 而不是 200：分类器对任何 2xx 一律直接判为 ok，用真实状态码会把这一帧
+        // 分成"没问题"。错误帧的状态码本来就没有意义 —— 判据只在帧内容里。
+        const classification = classifyCodexUpstreamError(null, { error: streamError })
+        logger.warn(
+          `⚠️ Codex stream error frame for account ${accountId} (model: ${upstreamRequestedModel}, state: ${classification.state}): ${classification.detail || 'no detail'}`
+        )
+        recordCodexAvailability(accountId, upstreamRequestedModel, classification).catch(() => {})
+
+        // 另存一份到诊断日志，供管理端直接查看 —— 服务器日志里这类失败混在全平台流量中
+        // 很难捞，而且访问日志的状态码恒为 200、响应体恒为空，光看它判断不出发生过什么。
+        codexDiagnosticLogService.record(codexDiagnosticLogService.EVENT_TYPES.STREAM_ERROR, {
+          accountId,
+          accountName: account?.name,
+          model: upstreamRequestedModel,
+          state: classification.state,
+          detail: classification.detail,
+          requestId: req.requestId,
+          apiKeyId: apiKeyData?.id
+        })
       }
     }
 
@@ -998,6 +1068,29 @@ const handleResponses = async (req, res) => {
     if (!res.headersSent) {
       res.status(status).json(responsePayload)
     }
+  }
+}
+
+/**
+ * 容量错误的换号重试。
+ *
+ * "Selected model is at capacity" 是上游容量问题，不是额度耗尽 —— 账号本身可用，换一个出口
+ * 通常就能过。此前这里既不重试，也刻意不降权（降权会把容量抖动误报成额度耗尽），结果同一个
+ * 账号被反复选中，用户就一直看到同一条报错。
+ *
+ * 重试只发生在还没向客户端写出任何字节之前，所以不会撕裂已经开始的 SSE 流。
+ */
+const handleResponses = async (req, res) => {
+  for (let attempt = 1; attempt <= MAX_CODEX_ATTEMPTS; attempt++) {
+    const outcome = await handleResponsesAttempt(req, res, attempt < MAX_CODEX_ATTEMPTS)
+
+    if (outcome !== RETRY_ON_CAPACITY) {
+      return
+    }
+
+    logger.warn(
+      `🔁 Codex capacity error, retrying on another account (attempt ${attempt + 1}/${MAX_CODEX_ATTEMPTS})`
+    )
   }
 }
 

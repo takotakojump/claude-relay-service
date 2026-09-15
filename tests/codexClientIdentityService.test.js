@@ -214,3 +214,68 @@ describe('codexClientIdentityService', () => {
     })
   })
 })
+
+// 线上实测到的真实 UA 形态。旧正则只认下划线写法，把这些真客户端判成了陌生客户端 ——
+// 后果是它们的身份既不被记录也不被透传，一律被换成钉死的兜底版本发往上游。
+describe('real-world Codex client user agents', () => {
+  const TUI = 'codex-tui/0.147.0 (Ubuntu 24.04.0; x86_64) unknown'
+  const DESKTOP = 'Codex Desktop/0.148.0-alpha.15'
+
+  beforeEach(() => {
+    store.applied = null
+    store.observed = {}
+    service.clearCache()
+  })
+
+  describe('isCodexClientUserAgent', () => {
+    it.each([
+      TUI,
+      'codex-tui/0.147.0 (Mac OS 15.0; arm64) Apple_Terminal',
+      DESKTOP,
+      'codex_cli_rs/0.146.0 (Ubuntu 24.04.0; x86_64) WindowsTerminal',
+      'codex_vscode/0.140.0'
+    ])('recognizes %s', (ua) => {
+      expect(service.isCodexClientUserAgent(ua)).toBe(true)
+    })
+
+    it.each(['python-requests/2.31.0', 'my-client/1.0', 'curl/8.4.0', '', 'nonsense'])(
+      'rejects %s',
+      (ua) => {
+        expect(service.isCodexClientUserAgent(ua)).toBe(false)
+      }
+    )
+  })
+
+  it('passes a hyphenated codex-tui identity through instead of the pinned fallback', async () => {
+    const resolved = await service.resolveOutbound('codex-tui', TUI)
+
+    expect(resolved.userAgent).toBe(TUI)
+    expect(resolved.version).toBe('0.147.0')
+  })
+
+  it('keeps the prerelease suffix instead of truncating it', async () => {
+    const resolved = await service.resolveOutbound('codex desktop', DESKTOP)
+
+    expect(resolved.version).toBe('0.148.0-alpha.15')
+  })
+
+  it('matches originator against the user agent across separator styles', async () => {
+    // 客户端在 originator 里写 codex_tui、UA 里写 codex-tui 属于同一个客户端，不该被判成矛盾
+    const resolved = await service.resolveOutbound('codex_tui', TUI)
+
+    expect(resolved.userAgent).toBe(TUI)
+  })
+
+  it('still falls back when the originator names a different client', async () => {
+    const resolved = await service.resolveOutbound('codex_vscode', TUI)
+
+    expect(resolved.userAgent).toBe(service.DEFAULT_IDENTITY.userAgent)
+  })
+
+  it('records the real client so the admin UI can offer its version', async () => {
+    await service.recordObserved('codex-tui', TUI)
+    const observed = await service.listObserved()
+
+    expect(observed.map((entry) => entry.version)).toContain('0.147.0')
+  })
+})

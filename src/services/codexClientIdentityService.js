@@ -39,7 +39,39 @@ const DEFAULT_IDENTITY = {
 }
 
 // Codex 客户端 UA 形态：<client>/<version> [附加信息]
-const CODEX_UA_PATTERN = /^(codex_vscode|codex_cli_rs|codex_exec)\/(\d[\d.]*)/i
+// 已知的 Codex 客户端名。线上实测出现过 `codex-tui/0.147.0` 与 `Codex Desktop/0.148.0-alpha.15`，
+// 分隔符是连字符和空格而不是下划线 —— 旧正则只认下划线，把真客户端判成了陌生客户端，于是它们的
+// 身份既不被记录也不被透传，全部被换成钉死的兜底版本发往上游，而上游按客户端身份判定新模型可用性。
+const CODEX_CLIENT_NAMES = new Set([
+  'codex_vscode',
+  'codex_cli_rs',
+  'codex_cli',
+  'codex_exec',
+  'codex_tui',
+  'codex_desktop'
+])
+
+// Codex 客户端 UA 形态：<client>/<version> [附加信息]
+// 版本段允许预发布后缀，否则 Desktop 的 0.148.0-alpha.15 会被截成 0.148.0。
+const CODEX_UA_PATTERN = /^([A-Za-z][A-Za-z0-9 _-]*?)\/(\d[\w.-]*)/
+
+// 客户端名分隔符各版本不一致（codex-tui / codex_cli_rs / Codex Desktop），
+// 统一折叠成下划线小写再比对，避免同一个客户端因写法不同被当成两个。
+function normalizeClientName(value) {
+  if (typeof value !== 'string') {
+    return null
+  }
+  const normalized = value
+    .trim()
+    .toLowerCase()
+    .replace(/[\s-]+/g, '_')
+  return normalized || null
+}
+
+function isKnownCodexClientName(value) {
+  const normalized = normalizeClientName(value)
+  return Boolean(normalized && CODEX_CLIENT_NAMES.has(normalized))
+}
 
 // 内存缓存：getApplied 在请求热路径上，不能每次都打 Redis
 let appliedCache = null
@@ -54,7 +86,7 @@ function parseUserAgent(userAgent) {
   if (!match) {
     return null
   }
-  return { clientType: match[1].toLowerCase(), version: match[2] }
+  return { clientType: normalizeClientName(match[1]), version: match[2] }
 }
 
 function buildField(originator, userAgent) {
@@ -83,7 +115,12 @@ function parseInboundIdentity(originator, userAgent) {
     return null
   }
 
-  if (originator.trim().toLowerCase() !== parsed.clientType) {
+  // 陌生客户端名一律不认，避免任意形如 foo/1.0 的 UA 被当成可信 Codex 身份透传上游。
+  if (!isKnownCodexClientName(parsed.clientType)) {
+    return null
+  }
+
+  if (normalizeClientName(originator) !== parsed.clientType) {
     return null
   }
 
@@ -285,10 +322,11 @@ class CodexClientIdentityService {
    */
   async apply(identity, appliedBy = 'unknown') {
     const parsed = parseUserAgent(identity?.userAgent)
-    if (!parsed) {
+    // 客户端名单与 parseInboundIdentity 共用，避免管理端能应用一个转发路径根本不认的身份。
+    if (!parsed || !isKnownCodexClientName(parsed.clientType)) {
       throw new Error('Invalid Codex user-agent')
     }
-    if (!identity.originator || identity.originator.trim().toLowerCase() !== parsed.clientType) {
+    if (!identity.originator || normalizeClientName(identity.originator) !== parsed.clientType) {
       throw new Error('originator must match the client type in user-agent')
     }
 
@@ -321,5 +359,12 @@ class CodexClientIdentityService {
   }
 }
 
+// 供路由层判定「这是不是真 Codex 客户端」，与身份解析共用同一份客户端名单，防止两处规则漂移。
+function isCodexClientUserAgent(userAgent) {
+  const parsed = parseUserAgent(userAgent)
+  return Boolean(parsed && isKnownCodexClientName(parsed.clientType))
+}
+
 module.exports = new CodexClientIdentityService()
 module.exports.DEFAULT_IDENTITY = DEFAULT_IDENTITY
+module.exports.isCodexClientUserAgent = isCodexClientUserAgent

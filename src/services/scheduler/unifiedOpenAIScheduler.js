@@ -52,7 +52,20 @@ class UnifiedOpenAIScheduler {
   }
 
   // ✅ 确保账号在调度前完成限流恢复与 schedulable 校正
-  async _ensureAccountReadyForScheduling(account, accountId, { sanitized = true } = {}) {
+  async _ensureAccountReadyForScheduling(
+    account,
+    accountId,
+    { sanitized = true, honorOverloadCooldown = true } = {}
+  ) {
+    // 容量错误只让账号短暂让位。它不是额度耗尽，所以不走限流那套长冷却，
+    // 但在冷却期内必须跳过，否则重试会反复选中同一个账号、撞同一堵墙。
+    //
+    // 专属账户例外：那里根本没有「另一个账号」可换，拦下来只会把真正的容量报错
+    // 替换成一句更难懂的 "not schedulable"，所以专属路径不认这个冷却。
+    if (honorOverloadCooldown && (await openaiAccountService.isAccountOverloaded(accountId))) {
+      return { canUse: false, reason: 'server_overloaded' }
+    }
+
     const hasRateLimitFlag = this._hasRateLimitFlag(account.rateLimitStatus)
     let rateLimitChecked = false
     let stillLimited = false
@@ -169,7 +182,7 @@ class UnifiedOpenAIScheduler {
               const readiness = await this._ensureAccountReadyForScheduling(
                 boundAccount,
                 boundAccount.id,
-                { sanitized: false }
+                { sanitized: false, honorOverloadCooldown: false }
               )
 
               if (!readiness.canUse) {
@@ -320,8 +333,10 @@ class UnifiedOpenAIScheduler {
       // 按优先级和最后使用时间排序（与 Claude/Gemini 调度保持一致）
       const sortedAccounts = sortAccountsByPriority(availableAccounts)
 
-      // 选择第一个账户
-      const selectedAccount = sortedAccounts[0]
+      // 容量冷却只降权，不排除。硬排除在小池子上会把一次容量抖动放大成整池停摆：
+      // 两个号都进冷却时候选列表为空，那段时间里每个请求都拿到「没有可用账号」，
+      // 比原本的容量报错更难排查。全部处于冷却时照样选一个，让真实的上游错误回到用户手上。
+      const selectedAccount = this._preferNonOverloaded(sortedAccounts)
 
       // 如果有会话哈希，建立新的映射
       if (sessionHash) {
@@ -352,6 +367,16 @@ class UnifiedOpenAIScheduler {
     }
   }
 
+  /**
+   * 在已排序的候选里优先挑没有处于容量冷却的账号。
+   *
+   * 冷却是"让位"而不是"下线"：全部账号都在冷却时仍然返回排序最靠前的那个，
+   * 这样上游真实的容量错误能回到用户手上，而不是退化成「没有可用账号」。
+   */
+  _preferNonOverloaded(sortedAccounts) {
+    return sortedAccounts.find((account) => !account.isOverloaded) || sortedAccounts[0]
+  }
+
   // 📋 获取所有可用账户（仅共享池）
   async _getAllAvailableAccounts(apiKeyData, requestedModel = null) {
     const availableAccounts = []
@@ -369,8 +394,10 @@ class UnifiedOpenAIScheduler {
       ) {
         const accountId = account.id || account.accountId
 
+        // 容量冷却在这里不作排除，只作标注：见下面挑选处的说明。
         const readiness = await this._ensureAccountReadyForScheduling(account, accountId, {
-          sanitized: true
+          sanitized: true,
+          honorOverloadCooldown: false
         })
 
         if (!readiness.canUse) {
@@ -425,6 +452,7 @@ class UnifiedOpenAIScheduler {
 
         availableAccounts.push({
           ...account,
+          isOverloaded: await openaiAccountService.isAccountOverloaded(accountId),
           accountId: account.id,
           accountType: 'openai',
           priority: parseInt(account.priority) || 50,
@@ -887,7 +915,8 @@ class UnifiedOpenAIScheduler {
           account.status !== 'error'
         ) {
           const readiness = await this._ensureAccountReadyForScheduling(account, account.id, {
-            sanitized: false
+            sanitized: false,
+            honorOverloadCooldown: false
           })
 
           if (!readiness.canUse) {
@@ -940,6 +969,7 @@ class UnifiedOpenAIScheduler {
           // 添加到可用账户列表
           availableAccounts.push({
             ...account,
+            isOverloaded: await openaiAccountService.isAccountOverloaded(account.id),
             accountId: account.id,
             accountType,
             priority: parseInt(account.priority) || 50,
@@ -957,8 +987,8 @@ class UnifiedOpenAIScheduler {
       // 按优先级和最后使用时间排序（与 Claude/Gemini 调度保持一致）
       const sortedAccounts = sortAccountsByPriority(availableAccounts)
 
-      // 选择第一个账户
-      const selectedAccount = sortedAccounts[0]
+      // 与共享池同理：容量冷却只降权，不能让分组变成空池
+      const selectedAccount = this._preferNonOverloaded(sortedAccounts)
 
       // 如果有会话哈希，建立新的映射
       if (sessionHash) {

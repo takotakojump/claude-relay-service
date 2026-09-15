@@ -127,6 +127,53 @@ describe('parseCodexRateLimitHeaders', () => {
 
     expect(result).toBeNull()
   })
+
+  it('drops a window that carries no used-percent anchor', () => {
+    // Official parse_rate_limit_window requires a finite used_percent. Without this guard a stray
+    // window-minutes header alone would render as a phantom row with no label and no numbers.
+    const result = parseCodexRateLimitHeaders(
+      {
+        'x-codex-primary-used-percent': '5',
+        'x-codex-primary-window-minutes': '300',
+        'x-codex-secondary-window-minutes': '10080',
+        'x-codex-secondary-reset-after-seconds': '86400'
+      },
+      { now: NOW }
+    )
+
+    expect(result.limits).toHaveLength(1)
+    expect(result.limits[0].primary.usedPercent).toBe(5)
+    expect(result.limits[0].secondary).toBeNull()
+  })
+
+  it('drops a zero-percent window that reports no window length and no reset', () => {
+    const result = parseCodexRateLimitHeaders(
+      {
+        'x-codex-primary-used-percent': '5',
+        'x-codex-primary-window-minutes': '300',
+        'x-codex-secondary-used-percent': '0'
+      },
+      { now: NOW }
+    )
+
+    expect(result.limits[0].secondary).toBeNull()
+  })
+
+  it('keeps a zero-percent window that still reports a window length', () => {
+    const result = parseCodexRateLimitHeaders(
+      {
+        'x-codex-primary-used-percent': '0',
+        'x-codex-primary-window-minutes': '10080'
+      },
+      { now: NOW }
+    )
+
+    expect(result.limits[0].primary).toEqual({
+      usedPercent: 0,
+      windowMinutes: 10080,
+      resetAt: null
+    })
+  })
 })
 
 describe('normalizeLimitId', () => {

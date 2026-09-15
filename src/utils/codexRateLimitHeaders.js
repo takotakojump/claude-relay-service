@@ -93,7 +93,14 @@ function parseWindow(normalized, rawId, slot, nowMs) {
     nowMs
   )
 
-  if (usedPercent === null && windowMinutes === null && resetAt === null) {
+  // Mirrors the official client's parse_rate_limit_window: a window needs a finite used-percent,
+  // plus at least one signal that it is a live window. Accepting a percent-less window is what
+  // renders a phantom row carrying no label and no numbers.
+  if (usedPercent === null) {
+    return null
+  }
+
+  if (usedPercent === 0 && !windowMinutes && resetAt === null) {
     return null
   }
 

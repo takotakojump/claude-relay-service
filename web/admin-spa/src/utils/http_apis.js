@@ -353,6 +353,12 @@ export const getCodexClientIdentityApi = (config) =>
 export const applyCodexClientIdentityApi = (data, config) =>
   request({ url: '/admin/codex-client-identity/apply', method: 'POST', data, ...config })
 
+// Codex 诊断日志（临时排查用，独立于服务器日志）
+export const getCodexDiagnosticsApi = (config) =>
+  request({ url: '/admin/codex-diagnostics', method: 'GET', ...config })
+export const clearCodexDiagnosticsApi = (config) =>
+  request({ url: '/admin/codex-diagnostics', method: 'DELETE', ...config })
+
 // 服务倍率配置（管理端）
 export const getAdminServiceRatesApi = (config) =>
   request({ url: '/admin/service-rates', method: 'GET', ...config })

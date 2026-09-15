@@ -84,6 +84,18 @@
             <i class="fas fa-id-badge mr-2"></i>
             Codex 身份
           </button>
+          <button
+            :class="[
+              'border-b-2 pb-2 text-sm font-medium transition-colors',
+              activeSection === 'codexDiagnostics'
+                ? 'border-blue-500 text-blue-600 dark:border-blue-400 dark:text-blue-400'
+                : 'border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-300'
+            ]"
+            @click="activeSection = 'codexDiagnostics'"
+          >
+            <i class="fas fa-file-waveform mr-2"></i>
+            Codex 诊断日志
+          </button>
         </nav>
       </div>
 
@@ -1397,6 +1409,11 @@
         <div v-show="activeSection === 'codexIdentity'">
           <CodexIdentitySection />
         </div>
+
+        <!-- Codex 诊断日志 -->
+        <div v-show="activeSection === 'codexDiagnostics'">
+          <CodexDiagnosticsSection />
+        </div>
       </div>
     </div>
   </div>
@@ -2000,6 +2017,7 @@ import * as httpApis from '@/utils/http_apis'
 import ConfirmModal from '@/components/common/ConfirmModal.vue'
 import ModelPricingSection from '@/components/settings/ModelPricingSection.vue'
 import CodexIdentitySection from '@/components/settings/CodexIdentitySection.vue'
+import CodexDiagnosticsSection from '@/components/settings/CodexDiagnosticsSection.vue'
 
 // 定义组件名称，用于keep-alive排除
 defineOptions({

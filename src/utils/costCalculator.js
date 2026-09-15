@@ -210,6 +210,10 @@ class CostCalculator {
     let usingDynamicPricing = false
 
     if (pricingData) {
+      // 只认 'priority'：*_cost_per_token_priority 是 OpenAI API 的 Priority Processing 价
+      // （实测对 gpt-5 正好是标准价的 2 倍），与 service_tier='priority' 一一对应。
+      // Codex 的 'fast' 是 ChatGPT 订阅积分概念，定价表里没有对应条目，套用 priority 价会让
+      // 记账翻倍，并让 serviceLimit 在实际花费一半时就触顶。
       const usePriority = serviceTier === 'priority' && pricingData.supports_service_tier
 
       const inputPrice =
