@@ -25,6 +25,7 @@ class ServiceRatesService {
         codex: 1.0,
         gemini: 1.0,
         droid: 1.0,
+        grok: 1.0,
         bedrock: 1.0,
         azure: 1.0,
         ccr: 1.0
@@ -190,6 +191,10 @@ class ServiceRatesService {
       return 'droid'
     }
 
+    if (modelLower.includes('grok') || modelLower.includes('xai')) {
+      return 'grok'
+    }
+
     // Bedrock 系列（通常带有 aws 或特定前缀）
     if (
       modelLower.includes('bedrock') ||
@@ -235,7 +240,8 @@ class ServiceRatesService {
       openai: 'codex',
       azure: 'azure',
       'azure-openai': 'azure',
-      droid: 'droid'
+      droid: 'droid',
+      grok: 'grok'
     }
 
     return mapping[accountType] || null

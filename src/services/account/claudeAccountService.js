@@ -2161,6 +2161,33 @@ class ClaudeAccountService {
     }
   }
 
+  // 🧮 从上游 limits[] 中提取「按模型限定的周窗口」
+  // 形如：{ kind: 'weekly_scoped', percent, resets_at, scope: { model: { display_name } } }
+  _extractWeeklyScopedModels(limits) {
+    if (!Array.isArray(limits)) {
+      return []
+    }
+
+    const result = []
+    for (const limit of limits) {
+      if (!limit || limit.kind !== 'weekly_scoped') {
+        continue
+      }
+      const modelName = limit.scope?.model?.display_name
+      if (!modelName) {
+        continue
+      }
+      result.push({
+        modelName: String(modelName),
+        utilization: this._toNumberOrNull(limit.percent),
+        resetsAt: limit.resets_at || null,
+        severity: limit.severity || null,
+        isActive: limit.is_active === true
+      })
+    }
+    return result
+  }
+
   // 📊 构建 Claude Usage 快照（从 Redis 数据）
   buildClaudeUsageSnapshot(accountData) {
     const updatedAt = accountData.claudeUsageUpdatedAt
@@ -2172,15 +2199,36 @@ class ClaudeAccountService {
     const sevenDayOpusUtilization = this._toNumberOrNull(accountData.claudeSevenDayOpusUtilization)
     const sevenDayOpusResetsAt = accountData.claudeSevenDayOpusResetsAt
 
+    let scopedModels = []
+    if (accountData.claudeWeeklyScopedModels) {
+      try {
+        const parsed = JSON.parse(accountData.claudeWeeklyScopedModels)
+        if (Array.isArray(parsed)) {
+          scopedModels = parsed
+        }
+      } catch {
+        // 脏数据不应该让整个用量快照失败
+        scopedModels = []
+      }
+    }
+
     const hasFiveHourData = fiveHourUtilization !== null || fiveHourResetsAt
     const hasSevenDayData = sevenDayUtilization !== null || sevenDayResetsAt
     const hasSevenDayOpusData = sevenDayOpusUtilization !== null || sevenDayOpusResetsAt
 
-    if (!updatedAt && !hasFiveHourData && !hasSevenDayData && !hasSevenDayOpusData) {
+    if (
+      !updatedAt &&
+      !hasFiveHourData &&
+      !hasSevenDayData &&
+      !hasSevenDayOpusData &&
+      scopedModels.length === 0
+    ) {
       return null
     }
 
     const now = Date.now()
+    const remainingFrom = (resetsAt) =>
+      resetsAt ? Math.max(0, Math.floor((new Date(resetsAt).getTime() - now) / 1000)) : null
 
     return {
       updatedAt,
@@ -2204,7 +2252,21 @@ class ClaudeAccountService {
         remainingSeconds: sevenDayOpusResetsAt
           ? Math.max(0, Math.floor((new Date(sevenDayOpusResetsAt).getTime() - now) / 1000))
           : null
-      }
+      },
+      // 上游按模型限定的周窗口（如 Fable），由 limits[] 解析而来。
+      // Redis 里可能存着 [null] 这类脏数据（Array.isArray 放行），而本方法的调用点
+      // 之一在 claudeAccounts.js 的 try 之外，抛异常会被 Promise.allSettled 无声吞掉，
+      // 表现为该账号所有用量条凭空消失。先过滤掉非对象元素。
+      sevenDayScopedModels: scopedModels
+        .filter((item) => item && typeof item === 'object')
+        .map((item) => ({
+          modelName: item.modelName,
+          utilization: this._toNumberOrNull(item.utilization),
+          resetsAt: item.resetsAt || null,
+          severity: item.severity || null,
+          isActive: item.isActive === true,
+          remainingSeconds: remainingFrom(item.resetsAt)
+        }))
     }
   }
 
@@ -2261,6 +2323,20 @@ class ClaudeAccountService {
         updates.claudeSevenDayOpusResetsAt = usageData.seven_day_sonnet.resets_at || ''
       }
     }
+
+    // 按模型限定的周窗口。
+    // 上游把这类额度放在 limits[] 里，而不是顶层的具名窗口：
+    //   { kind: "weekly_scoped", percent: 9, resets_at: "...",
+    //     scope: { model: { display_name: "Fable" } }, is_active: true }
+    // 顶层的 seven_day_opus / seven_day_sonnet 对这些账号一直是 null，
+    // 真正有数据的是这里，所以模型级用量必须从 limits[] 取。
+    const scopedModels = this._extractWeeklyScopedModels(usageData.limits)
+
+    // 这里刻意不做「什么都没拿到就提前 return」：updates 已经预置了空串，
+    // 目的就是让上游不再回传的窗口被清空，而不是让旧快照永久留在 Redis ——
+    // setClaudeAccount 走 Object.assign 合并，只在非空时写会让 resetsAt 落到过去、
+    // remainingSeconds 恒为 0，前端就一直挂着一条百分比冻结的僵尸进度条。
+    updates.claudeWeeklyScopedModels = JSON.stringify(scopedModels)
 
     updates.claudeUsageUpdatedAt = new Date().toISOString()
 

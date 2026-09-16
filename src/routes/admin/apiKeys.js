@@ -11,7 +11,7 @@ const { validateServiceLimits } = require('../../utils/serviceLimitConfig')
 const router = express.Router()
 
 // 有效的权限值列表
-const VALID_PERMISSIONS = ['claude', 'gemini', 'openai', 'droid']
+const VALID_PERMISSIONS = ['claude', 'gemini', 'openai', 'droid', 'grok']
 
 /**
  * 验证权限数组格式
@@ -878,6 +878,7 @@ router.get('/accounts/binding-counts', authenticateAdmin, async (req, res) => {
       azureOpenaiAccountId: {},
       bedrockAccountId: {},
       droidAccountId: {},
+      grokAccountId: {},
       ccrAccountId: {}
     }
 
@@ -924,6 +925,12 @@ router.get('/accounts/binding-counts', authenticateAdmin, async (req, res) => {
       if (key.droidAccountId) {
         const id = key.droidAccountId
         bindingCounts.droidAccountId[id] = (bindingCounts.droidAccountId[id] || 0) + 1
+      }
+
+      // Grok 账户
+      if (key.grokAccountId) {
+        const id = key.grokAccountId
+        bindingCounts.grokAccountId[id] = (bindingCounts.grokAccountId[id] || 0) + 1
       }
 
       // CCR 账户
@@ -1478,6 +1485,7 @@ router.post('/api-keys', authenticateAdmin, async (req, res) => {
       droidAccountId,
       ccrAccountId,
       ccrFallbackToPool,
+      grokAccountId,
       permissions,
       concurrencyLimit,
       rateLimitWindow,
@@ -1692,6 +1700,7 @@ router.post('/api-keys', authenticateAdmin, async (req, res) => {
       droidAccountId,
       ccrAccountId,
       ccrFallbackToPool: ccrFallbackToPool !== undefined ? ccrFallbackToPool : true,
+      grokAccountId,
       permissions,
       concurrencyLimit,
       rateLimitWindow,
@@ -1753,6 +1762,7 @@ router.post('/api-keys/batch', authenticateAdmin, async (req, res) => {
       droidAccountId,
       ccrAccountId,
       ccrFallbackToPool,
+      grokAccountId,
       permissions,
       concurrencyLimit,
       rateLimitWindow,
@@ -1847,6 +1857,7 @@ router.post('/api-keys/batch', authenticateAdmin, async (req, res) => {
           droidAccountId,
           ccrAccountId,
           ccrFallbackToPool: ccrFallbackToPool !== undefined ? ccrFallbackToPool : true,
+          grokAccountId,
           permissions,
           concurrencyLimit,
           rateLimitWindow,
@@ -2071,6 +2082,9 @@ router.put('/api-keys/batch', authenticateAdmin, async (req, res) => {
             finalUpdates.ccrFallbackToPool = updates.ccrFallbackToPool
           }
         }
+        if (updates.grokAccountId !== undefined) {
+          finalUpdates.grokAccountId = updates.grokAccountId || ''
+        }
 
         // 处理标签操作
         if (updates.tags !== undefined) {
@@ -2176,6 +2190,7 @@ router.put('/api-keys/:keyId', authenticateAdmin, async (req, res) => {
       droidAccountId,
       ccrAccountId,
       ccrFallbackToPool,
+      grokAccountId,
       permissions,
       enableModelRestriction,
       restrictedModels,
@@ -2289,6 +2304,10 @@ router.put('/api-keys/:keyId', authenticateAdmin, async (req, res) => {
         return res.status(400).json({ error: 'ccrFallbackToPool must be a boolean' })
       }
       updates.ccrFallbackToPool = ccrFallbackToPool
+    }
+
+    if (grokAccountId !== undefined) {
+      updates.grokAccountId = grokAccountId || ''
     }
 
     if (permissions !== undefined) {

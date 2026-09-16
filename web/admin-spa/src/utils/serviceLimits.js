@@ -3,6 +3,7 @@ export const SERVICE_LIMIT_SERVICES = Object.freeze([
   { key: 'gemini', label: 'Gemini' },
   { key: 'codex', label: 'Codex' },
   { key: 'droid', label: 'Droid' },
+  { key: 'grok', label: 'Grok' },
   { key: 'bedrock', label: 'Bedrock' },
   { key: 'azure', label: 'Azure' },
   { key: 'ccr', label: 'CCR' }

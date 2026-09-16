@@ -581,6 +581,16 @@
                 />
                 <span class="text-sm text-gray-700 dark:text-gray-300">Droid</span>
               </label>
+              <label class="flex cursor-pointer items-center">
+                <input
+                  v-model="form.permissions"
+                  class="mr-2 rounded text-blue-600 focus:ring-blue-500 dark:border-gray-600 dark:bg-gray-700"
+                  type="checkbox"
+                  value="grok"
+                  @change="updatePermissions"
+                />
+                <span class="text-sm text-gray-700 dark:text-gray-300">Grok</span>
+              </label>
             </div>
             <p class="mt-2 text-xs text-gray-500 dark:text-gray-400">
               不选择任何服务表示允许访问全部服务
@@ -910,6 +920,20 @@
                   <span>CCR 账号不可用时回退共享账号池（关闭则直接报错，不使用其它账号）</span>
                 </label>
               </div>
+              <div>
+                <label class="mb-1 block text-sm font-medium text-gray-600 dark:text-gray-400"
+                  >Grok 专属账号</label
+                >
+                <AccountSelector
+                  v-model="form.grokAccountId"
+                  :accounts="localAccounts.grok"
+                  default-option-text="使用共享账号池"
+                  :disabled="form.permissions.length > 0 && !form.permissions.includes('grok')"
+                  :groups="localAccounts.grokGroups"
+                  placeholder="请选择Grok账号"
+                  platform="grok"
+                />
+              </div>
             </div>
             <p class="mt-2 text-xs text-gray-500 dark:text-gray-400">
               选择专属账号后此 Key 仅用该账号，不选则用共享池。绑定 CCR 后该 Key 的 Claude
@@ -1180,10 +1204,12 @@ const localAccounts = ref({
   bedrock: [],
   droid: [],
   ccr: [],
+  grok: [],
   claudeGroups: [],
   geminiGroups: [],
   openaiGroups: [],
-  droidGroups: []
+  droidGroups: [],
+  grokGroups: []
 })
 
 // 支持的客户端列表
@@ -1253,6 +1279,7 @@ const form = reactive({
   droidAccountId: '',
   ccrAccountId: '',
   ccrFallbackToPool: true,
+  grokAccountId: '',
   enableModelRestriction: false,
   restrictedModels: [],
   modelInput: '',
@@ -1538,6 +1565,12 @@ const updateApiKey = async () => {
     }
     data.ccrFallbackToPool = form.ccrFallbackToPool
 
+    if (form.grokAccountId) {
+      data.grokAccountId = form.grokAccountId
+    } else {
+      data.grokAccountId = null
+    }
+
     // 模型限制 - 始终提交这些字段
     data.enableModelRestriction = form.enableModelRestriction
     data.restrictedModels = form.restrictedModels
@@ -1583,6 +1616,7 @@ const refreshAccounts = async () => {
       bedrockData,
       droidData,
       ccrData,
+      grokData,
       groupsData
     ] = await Promise.all([
       httpApis.getClaudeAccountsApi(),
@@ -1594,6 +1628,7 @@ const refreshAccounts = async () => {
       httpApis.getBedrockAccountsApi(),
       httpApis.getDroidAccountsApi(),
       httpApis.getCcrAccountsApi(),
+      httpApis.getGrokAccountsApi(),
       httpApis.getAccountGroupsApi()
     ])
 
@@ -1695,6 +1730,14 @@ const refreshAccounts = async () => {
       }))
     }
 
+    if (grokData.success) {
+      localAccounts.value.grok = (grokData.data || []).map((account) => ({
+        ...account,
+        platform: 'grok',
+        isDedicated: account.accountType === 'dedicated'
+      }))
+    }
+
     // 处理分组数据
     if (groupsData.success) {
       const allGroups = groupsData.data || []
@@ -1702,6 +1745,7 @@ const refreshAccounts = async () => {
       localAccounts.value.geminiGroups = allGroups.filter((g) => g.platform === 'gemini')
       localAccounts.value.openaiGroups = allGroups.filter((g) => g.platform === 'openai')
       localAccounts.value.droidGroups = allGroups.filter((g) => g.platform === 'droid')
+      localAccounts.value.grokGroups = allGroups.filter((g) => g.platform === 'grok')
     }
 
     showToast('账号列表已刷新', 'success')
@@ -1829,7 +1873,7 @@ onMounted(async () => {
   form.weeklyResetHour = props.apiKey.weeklyResetHour || 0
   // 处理权限数据，兼容旧格式（字符串）和新格式（数组）
   // 有效的权限值
-  const VALID_PERMS = ['claude', 'gemini', 'openai', 'droid']
+  const VALID_PERMS = ['claude', 'gemini', 'openai', 'droid', 'grok']
   let perms = props.apiKey.permissions
   // 如果是字符串，尝试 JSON.parse（Redis 可能返回 "[]" 或 "[\"gemini\"]"）
   if (typeof perms === 'string') {
@@ -1875,6 +1919,7 @@ onMounted(async () => {
   form.ccrAccountId = props.apiKey.ccrAccountId || ''
   form.ccrFallbackToPool =
     props.apiKey.ccrFallbackToPool !== false && props.apiKey.ccrFallbackToPool !== 'false'
+  form.grokAccountId = props.apiKey.grokAccountId || ''
   form.restrictedModels = props.apiKey.restrictedModels || []
   form.allowedClients = props.apiKey.allowedClients || []
   form.tags = props.apiKey.tags || []

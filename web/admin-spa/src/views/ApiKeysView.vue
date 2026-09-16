@@ -562,6 +562,18 @@
                                 {{ getDroidBindingInfo(key) }}
                               </span>
                             </div>
+                            <!-- Grok 绑定 -->
+                            <div v-if="key.grokAccountId" class="flex items-center gap-1 text-xs">
+                              <span
+                                class="inline-flex items-center rounded bg-zinc-200 px-1.5 py-0.5 text-zinc-800 dark:bg-zinc-800 dark:text-zinc-200"
+                              >
+                                <i class="fas fa-bolt mr-1 text-[10px]" />
+                                Grok
+                              </span>
+                              <span class="truncate text-gray-600 dark:text-gray-400">
+                                {{ getGrokBindingInfo(key) }}
+                              </span>
+                            </div>
                             <!-- 共享池 -->
                             <div
                               v-if="
@@ -570,7 +582,8 @@
                                 !key.geminiAccountId &&
                                 !key.openaiAccountId &&
                                 !key.bedrockAccountId &&
-                                !key.droidAccountId
+                                !key.droidAccountId &&
+                                !key.grokAccountId
                               "
                               class="text-xs text-gray-500 dark:text-gray-400"
                             >
@@ -1405,6 +1418,18 @@
                     {{ getDroidBindingInfo(key) }}
                   </span>
                 </div>
+                <!-- Grok 绑定 -->
+                <div v-if="key.grokAccountId" class="flex flex-wrap items-center gap-1 text-xs">
+                  <span
+                    class="inline-flex items-center rounded bg-zinc-200 px-2 py-0.5 text-zinc-800 dark:bg-zinc-800 dark:text-zinc-200"
+                  >
+                    <i class="fas fa-bolt mr-1" />
+                    Grok
+                  </span>
+                  <span class="text-gray-600 dark:text-gray-400">
+                    {{ getGrokBindingInfo(key) }}
+                  </span>
+                </div>
                 <!-- 无绑定时显示共享池 -->
                 <div
                   v-if="
@@ -1413,7 +1438,8 @@
                     !key.geminiAccountId &&
                     !key.openaiAccountId &&
                     !key.bedrockAccountId &&
-                    !key.droidAccountId
+                    !key.droidAccountId &&
+                    !key.grokAccountId
                   "
                   class="text-xs text-gray-500 dark:text-gray-400"
                 >
@@ -2311,10 +2337,12 @@ const accounts = ref({
   bedrock: [],
   droid: [],
   ccr: [], // 添加 CCR 账号列表
+  grok: [],
   claudeGroups: [],
   geminiGroups: [],
   openaiGroups: [],
-  droidGroups: []
+  droidGroups: [],
+  grokGroups: []
 })
 // 账号数据加载状态
 const accountsLoading = ref(false)
@@ -2516,6 +2544,7 @@ const loadAccounts = async (forceRefresh = false) => {
       bedrockData,
       droidData,
       ccrData,
+      grokData,
       groupsData
     ] = await Promise.all([
       httpApis.getClaudeAccountsApi(),
@@ -2527,6 +2556,7 @@ const loadAccounts = async (forceRefresh = false) => {
       httpApis.getBedrockAccountsApi(),
       httpApis.getDroidAccountsApi(),
       httpApis.getCcrAccountsApi(),
+      httpApis.getGrokAccountsApi(),
       httpApis.getAccountGroupsApi()
     ])
 
@@ -2620,6 +2650,14 @@ const loadAccounts = async (forceRefresh = false) => {
       }))
     }
 
+    if (grokData.success) {
+      accounts.value.grok = (grokData.data || []).map((account) => ({
+        ...account,
+        platform: 'grok',
+        isDedicated: account.accountType === 'dedicated'
+      }))
+    }
+
     if (groupsData.success) {
       // 处理分组数据
       const allGroups = groupsData.data || []
@@ -2627,6 +2665,7 @@ const loadAccounts = async (forceRefresh = false) => {
       accounts.value.geminiGroups = allGroups.filter((g) => g.platform === 'gemini')
       accounts.value.openaiGroups = allGroups.filter((g) => g.platform === 'openai')
       accounts.value.droidGroups = allGroups.filter((g) => g.platform === 'droid')
+      accounts.value.grokGroups = allGroups.filter((g) => g.platform === 'grok')
     }
 
     // 标记账号数据已加载
@@ -3049,6 +3088,11 @@ const getBoundAccountName = (accountId) => {
       return `分组-${droidGroup.name}`
     }
 
+    const grokGroup = accounts.value.grokGroups.find((g) => g.id === groupId)
+    if (grokGroup) {
+      return `分组-${grokGroup.name}`
+    }
+
     // 如果找不到分组，返回分组ID的前8位
     return `分组-${groupId.substring(0, 8)}`
   }
@@ -3114,6 +3158,11 @@ const getBoundAccountName = (accountId) => {
     return `${droidAccount.name}`
   }
 
+  const grokAccount = accounts.value.grok.find((acc) => acc.id === accountId)
+  if (grokAccount) {
+    return `${grokAccount.name}`
+  }
+
   // 如果找不到，返回账户ID的前8位
   return `${accountId.substring(0, 8)}`
 }
@@ -3126,7 +3175,8 @@ const hasAnyBinding = (key) => {
     key.geminiAccountId ||
     key.openaiAccountId ||
     key.bedrockAccountId ||
-    key.droidAccountId
+    key.droidAccountId ||
+    key.grokAccountId
   )
 }
 
@@ -3251,6 +3301,24 @@ const getDroidBindingInfo = (key) => {
       return info
     }
     const account = accounts.value.droid.find((acc) => acc.id === key.droidAccountId)
+    if (!account) {
+      return `⚠️ ${info} (账户不存在)`
+    }
+    if (account.accountType === 'dedicated') {
+      return `🔒 专属-${info}`
+    }
+    return info
+  }
+  return ''
+}
+
+const getGrokBindingInfo = (key) => {
+  if (key.grokAccountId) {
+    const info = getBoundAccountName(key.grokAccountId)
+    if (key.grokAccountId.startsWith('group:')) {
+      return info
+    }
+    const account = accounts.value.grok.find((acc) => acc.id === key.grokAccountId)
     if (!account) {
       return `⚠️ ${info} (账户不存在)`
     }
@@ -4392,6 +4460,7 @@ const ACCOUNT_TYPE_LABELS = {
   openai: 'OpenAI',
   gemini: 'Gemini',
   droid: 'Droid',
+  grok: 'Grok',
   deleted: '已删除',
   other: '其他'
 }
@@ -4420,6 +4489,9 @@ const normalizeFrontendAccountCategory = (type) => {
   }
   if (lower === 'droid') {
     return 'droid'
+  }
+  if (lower === 'grok') {
+    return 'grok'
   }
   return 'other'
 }
@@ -4574,6 +4646,7 @@ const exportToExcel = () => {
         'Azure OpenAI专属账户': key.azureOpenaiAccountId || '',
         Bedrock专属账户: key.bedrockAccountId || '',
         Droid专属账户: key.droidAccountId || '',
+        Grok专属账户: key.grokAccountId || '',
 
         // 模型和客户端限制
         启用模型限制: key.enableModelRestriction ? '是' : '否',
