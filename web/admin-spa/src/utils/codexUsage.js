@@ -150,6 +150,11 @@ export function formatCodexResetDate(window) {
 /**
  * 把 limits[] 摊平成可渲染的行，只产出真实存在的窗口。
  * 上游不再返回的窗口不会出现在这里，也就不会再有幽灵卡片。
+ *
+ * /wham/usage 的 additional_rate_limits 会把账号名下所有计费特性都列出来，用没用过都列。
+ * 一个只跑 Codex 的账号因此会多出三四条恒为 0% 的进度条，把唯一有意义的那条淹掉。
+ * 所以主桶（limitId === 'codex'）不管用量多少都保留，附加桶只有真的产生过用量才渲染——
+ * 一旦被用上，下一次快照它自己就会冒出来。
  */
 export function flattenCodexLimits(codexUsage) {
   if (!codexUsage || !Array.isArray(codexUsage.limits)) return []
@@ -164,6 +169,9 @@ export function flattenCodexLimits(codexUsage) {
     for (const slot of ['primary', 'secondary']) {
       const window = limit[slot]
       if (!window) continue
+
+      // 恒为 0 的附加额度不占位置。写成 !(x > 0) 是为了把 null（上游没给百分比）一并挡掉。
+      if (isAdditional && !(normalizeCodexUsagePercent(window) > 0)) continue
 
       const label = formatCodexWindowLabel(window.windowMinutes)
       const prefix = isAdditional ? limit.limitName || limit.limitId : ''

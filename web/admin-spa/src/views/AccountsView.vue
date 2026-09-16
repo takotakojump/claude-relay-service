@@ -1284,13 +1284,13 @@
                           </div>
                         </div>
                         <div class="mt-1 text-[11px] text-gray-500 dark:text-gray-400">
-                          <span v-if="window.used !== null && window.limit">
+                          <span v-if="hasGrokQuotaCounts(window)">
                             {{ formatNumber(window.used) }} / {{ formatNumber(window.limit) }}
                           </span>
                           <span v-if="window.remainingSeconds !== null" class="ml-1">
                             重置剩余 {{ formatClaudeRemaining(window) }}
                           </span>
-                          <span v-if="window.used === null && !window.limit">等待上游配额头</span>
+                          <span v-if="!hasGrokQuotaCounts(window)">等待上游配额头</span>
                         </div>
                       </div>
                     </div>
@@ -1962,13 +1962,13 @@
                     </div>
                   </div>
                   <div class="mt-1 text-[11px] text-gray-500 dark:text-gray-400">
-                    <span v-if="window.used !== null && window.limit">
+                    <span v-if="hasGrokQuotaCounts(window)">
                       {{ formatNumber(window.used) }} / {{ formatNumber(window.limit) }}
                     </span>
                     <span v-if="window.remainingSeconds !== null" class="ml-1">
                       重置剩余 {{ formatClaudeRemaining(window) }}
                     </span>
-                    <span v-if="window.used === null && !window.limit">等待上游配额头</span>
+                    <span v-if="!hasGrokQuotaCounts(window)">等待上游配额头</span>
                   </div>
                 </div>
               </div>
@@ -5197,16 +5197,28 @@ const formatGrokRollingTooltip = (usage) => {
   return `$${cost} · ${tokens} tokens · ${requests} 次`
 }
 
+// 上游没回过配额头时，grokQuota.js 的 formatWindow 会把 tokens / requests 返回 null，
+// 但只要 plan 有值快照本身就非 null。原来无条件 `...(usage.tokens || {})` 摊开成一个只有
+// key/label 的空壳，于是列表里挂着两条 "-%" 的死进度条 + "重置剩余 -"。
+// 没数据的窗口直接不产出：两条都没有时整块不渲染，说明由上面那句
+// 「配额需一次成功请求后显示」承担。
 const grokQuotaWindows = (account) => {
   const usage = account?.grokUsage
   if (!usage) {
     return []
   }
   return [
-    { key: 'tokens', label: 'tokens', ...(usage.tokens || {}) },
-    { key: 'requests', label: 'req', ...(usage.requests || {}) }
+    { key: 'tokens', label: 'tokens', window: usage.tokens },
+    { key: 'requests', label: 'req', window: usage.requests }
   ]
+    .filter((item) => item.window)
+    .map(({ key, label, window }) => ({ key, label, ...window }))
 }
+
+// 窗口有 limit 但缺 remaining 时 used 会是 null，这时只能提示等待上游，不能画用量数字。
+// 模板两处（卡片视图 / 表格视图）共用同一判据，避免再次写出 `=== null` 漏掉 undefined 的守卫。
+const hasGrokQuotaCounts = (window) =>
+  window?.used !== null && window?.used !== undefined && Boolean(window?.limit)
 
 // 格式化费用显示
 const formatCost = (cost) => {

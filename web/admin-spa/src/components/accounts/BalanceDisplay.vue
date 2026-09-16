@@ -73,11 +73,22 @@
             </span>
 
             <div class="flex w-[94px] flex-col gap-0.5">
-              <div class="h-1.5 w-full rounded-full bg-gray-200 dark:bg-gray-600">
+              <!-- 上游没回这个分类时 remainingPercent 是 null。这里画的是「剩余」，
+                   把未知渲染成 0% 实心条会和「额度见底」完全一样，只能靠旁边的 — 区分。
+                   所以未知用虚线空槽表示，实心槽只留给真有数据的分类。 -->
+              <div
+                class="h-1.5 w-full rounded-full"
+                :class="
+                  row.remainingPercent === null
+                    ? 'border border-dashed border-gray-300 dark:border-gray-500'
+                    : 'bg-gray-200 dark:bg-gray-600'
+                "
+              >
                 <div
+                  v-if="row.remainingPercent !== null"
                   class="h-1.5 rounded-full transition-all"
                   :class="row.barClass"
-                  :style="{ width: `${row.remainingPercent ?? 0}%` }"
+                  :style="{ width: `${row.remainingPercent}%` }"
                 ></div>
               </div>
               <div
