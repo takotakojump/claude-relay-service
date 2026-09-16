@@ -30,6 +30,18 @@ const mockClient = {
   hgetall: jest.fn(async () => {
     commandLog.push('hgetall')
     return { ...storedAccount }
+  }),
+  // Mirrors CAS_HSET_SCRIPT: swap only if the field still holds what the caller read a moment ago.
+  // Redis' HGET returns false for a missing field and the Lua normalizes that to '', which is also
+  // what casUpdateField sends as the expected value — so an absent field must compare equal to ''.
+  eval: jest.fn(async (_script, _numKeys, _key, field, expected, next) => {
+    commandLog.push('eval')
+    const current = storedAccount[field] === undefined ? '' : storedAccount[field]
+    if (current !== expected) {
+      return 0
+    }
+    storedAccount[field] = next
+    return 1
   })
 }
 
