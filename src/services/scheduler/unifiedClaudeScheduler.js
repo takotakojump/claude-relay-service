@@ -43,6 +43,7 @@ function isProAccount(info) {
 class UnifiedClaudeScheduler {
   constructor() {
     this.SESSION_MAPPING_PREFIX = 'unified_claude_session_mapping:'
+    this._claudeCcrBalanceCounters = new Map()
   }
 
   // 🔍 检查账户是否支持请求的模型
@@ -184,11 +185,21 @@ class UnifiedClaudeScheduler {
     forcedAccount = null
   ) {
     try {
+      const hasDedicatedClaudeCcrPair =
+        apiKeyData.claudeAccountId &&
+        !apiKeyData.claudeAccountId.startsWith('group:') &&
+        apiKeyData.ccrAccountId
+
       // 🔒 如果有强制绑定的账户（全局会话绑定），仅 claude-official 类型受影响
       if (forcedAccount && forcedAccount.accountId && forcedAccount.accountType) {
         // ⚠️ 只有 claude-official 类型账户受全局会话绑定限制
         // 其他类型（bedrock, ccr, claude-console等）忽略绑定，走正常调度
-        if (forcedAccount.accountType !== 'claude-official') {
+        if (hasDedicatedClaudeCcrPair) {
+          logger.info(
+            `🔀 Ignoring session binding for dual-bound Claude/CCR API key ${apiKeyData.name || apiKeyData.id}`
+          )
+          // Continue with the normal dual-account scheduler below.
+        } else if (forcedAccount.accountType !== 'claude-official') {
           logger.info(
             `🔗 Session binding ignored for non-official account type: ${forcedAccount.accountType}, proceeding with normal scheduling`
           )
@@ -242,6 +253,18 @@ class UnifiedClaudeScheduler {
         logger.info(`🎯 CCR vendor prefix detected, routing to CCR accounts only`)
         return await this._selectCcrAccount(apiKeyData, sessionHash, effectiveModel)
       }
+
+      if (hasDedicatedClaudeCcrPair) {
+        const balancedAccount = await this._selectBoundClaudeCcrBalancedAccount(
+          apiKeyData,
+          effectiveModel,
+          requestedModelFamily
+        )
+        if (balancedAccount) {
+          return balancedAccount
+        }
+      }
+
       // 如果API Key绑定了专属账户或分组，优先使用
       if (apiKeyData.claudeAccountId) {
         // 检查是否是分组
@@ -564,6 +587,178 @@ class UnifiedClaudeScheduler {
   }
 
   // 📋 获取所有可用账户（合并官方和Console）
+  /**
+   * Select between the two dedicated accounts bound to one API key.
+   * Returns null when neither account is currently usable so the existing
+   * dedicated-account error handling can report the precise reason.
+   */
+  async _selectBoundClaudeCcrBalancedAccount(apiKeyData, requestedModel, requestedModelFamily) {
+    const candidates = []
+
+    try {
+      const claudeAccount = await redis.getClaudeAccount(apiKeyData.claudeAccountId)
+      if (
+        claudeAccount &&
+        (claudeAccount.isActive === true || claudeAccount.isActive === 'true') &&
+        !['error', 'blocked', 'temp_error'].includes(claudeAccount.status) &&
+        isSchedulable(claudeAccount.schedulable) &&
+        this._isModelSupportedByAccount(claudeAccount, 'claude-official', requestedModel)
+      ) {
+        const isTempUnavailable = await this.isAccountTemporarilyUnavailable(
+          claudeAccount.id,
+          'claude-official'
+        )
+        const isRateLimited = await claudeAccountService.isAccountRateLimited(claudeAccount.id)
+        let isModelRateLimited = false
+        if (requestedModelFamily) {
+          await claudeAccountService.clearExpiredModelRateLimit(
+            claudeAccount.id,
+            requestedModelFamily
+          )
+          isModelRateLimited = await claudeAccountService.isAccountModelRateLimited(
+            claudeAccount.id,
+            requestedModelFamily
+          )
+        }
+
+        if (!isTempUnavailable && !isRateLimited && !isModelRateLimited) {
+          candidates.push({
+            accountId: claudeAccount.id,
+            accountType: 'claude-official',
+            name: claudeAccount.name,
+            priority: parseInt(claudeAccount.priority, 10) || 50,
+            lastUsedAt: claudeAccount.lastUsedAt || '0',
+            createdAt: claudeAccount.createdAt || '0'
+          })
+        }
+      }
+    } catch (error) {
+      logger.warn(
+        `⚠️ Failed to evaluate bound Claude account ${apiKeyData.claudeAccountId}:`,
+        error.message
+      )
+    }
+
+    try {
+      const ccrAccount = await ccrAccountService.getAccount(apiKeyData.ccrAccountId)
+      if (
+        ccrAccount &&
+        (ccrAccount.isActive === true || ccrAccount.isActive === 'true') &&
+        ccrAccount.status === 'active' &&
+        isSchedulable(ccrAccount.schedulable) &&
+        this._isModelSupportedByAccount(ccrAccount, 'ccr', requestedModel)
+      ) {
+        const isTempUnavailable = await this.isAccountTemporarilyUnavailable(ccrAccount.id, 'ccr')
+        const isRateLimited = await this.isAccountRateLimited(ccrAccount.id, 'ccr')
+        const isQuotaExceeded = await ccrAccountService.isAccountQuotaExceeded(ccrAccount.id)
+        const isOverloaded = await ccrAccountService.isAccountOverloaded(ccrAccount.id)
+        const isSubscriptionExpired = ccrAccountService.isSubscriptionExpired(ccrAccount)
+        if (
+          !isTempUnavailable &&
+          !isRateLimited &&
+          !isQuotaExceeded &&
+          !isOverloaded &&
+          !isSubscriptionExpired
+        ) {
+          candidates.push({
+            accountId: ccrAccount.id,
+            accountType: 'ccr',
+            name: ccrAccount.name,
+            priority: parseInt(ccrAccount.priority, 10) || 50,
+            lastUsedAt: ccrAccount.lastUsedAt || '0',
+            createdAt: ccrAccount.createdAt || '0'
+          })
+        }
+      }
+    } catch (error) {
+      logger.warn(
+        `⚠️ Failed to evaluate bound CCR account ${apiKeyData.ccrAccountId}:`,
+        error.message
+      )
+    }
+
+    if (candidates.length === 0) {
+      return null
+    }
+
+    // Keep the order deterministic so every relay instance builds the same
+    // weighted schedule.  A lower priority value is more important, therefore
+    // it receives a larger share of the requests.  Healthy accounts at every
+    // priority still participate; priority is not a primary/backup switch.
+    const sortedCandidates = [...candidates].sort((a, b) => {
+      const priorityA = Number.parseInt(a.priority, 10)
+      const priorityB = Number.parseInt(b.priority, 10)
+      const normalizedPriorityA = Number.isFinite(priorityA) && priorityA > 0 ? priorityA : 50
+      const normalizedPriorityB = Number.isFinite(priorityB) && priorityB > 0 ? priorityB : 50
+      if (normalizedPriorityA !== normalizedPriorityB) {
+        return normalizedPriorityA - normalizedPriorityB
+      }
+
+      // Keep the original candidate order for ties.  Do not use lastUsedAt:
+      // it changes after every request and would make a same-priority schedule
+      // select the same account repeatedly when the sort order flips.
+      return 0
+    })
+    const priorities = sortedCandidates.map((candidate) => {
+      const value = Number.parseInt(candidate.priority, 10)
+      return Number.isFinite(value) && value > 0 ? value : 50
+    })
+    const highestPriorityValue = Math.max(...priorities)
+    const rawWeights = priorities.map((priority) =>
+      Math.min(1000, Math.max(1, Math.round((highestPriorityValue / priority) * 10)))
+    )
+    const greatestCommonDivisor = (a, b) => {
+      let left = a
+      let right = b
+      while (right !== 0) {
+        const remainder = left % right
+        left = right
+        right = remainder
+      }
+      return left || 1
+    }
+    const commonWeightDivisor = rawWeights.reduce(greatestCommonDivisor)
+    const weightedCandidates = []
+
+    sortedCandidates.forEach((candidate, index) => {
+      // Priorities are currently constrained to 1..100.  Cap the expanded
+      // schedule so a malformed value cannot allocate an unbounded array.
+      const weight = Math.min(100, Math.max(1, Math.round(rawWeights[index] / commonWeightDivisor)))
+      for (let i = 0; i < weight; i += 1) {
+        weightedCandidates.push(candidate)
+      }
+    })
+
+    // One counter per API key makes the rotation global across worker
+    // processes when Redis is available.  The in-memory counter is only a
+    // single-process fallback for development and tests.
+    const counterKey = `claude_ccr_balance:${apiKeyData.id || apiKeyData.name || 'default'}`
+    let sequence = null
+    try {
+      const client = redis.getClientSafe()
+      if (client && typeof client.incr === 'function') {
+        sequence = Number(await client.incr(counterKey))
+      }
+    } catch (error) {
+      logger.debug(`Failed to increment Claude/CCR balance counter ${counterKey}:`, error.message)
+    }
+
+    if (!Number.isFinite(sequence)) {
+      const previous = this._claudeCcrBalanceCounters.get(counterKey) || 0
+      sequence = previous + 1
+      this._claudeCcrBalanceCounters.set(counterKey, sequence)
+    }
+
+    const selected = weightedCandidates[(sequence - 1) % weightedCandidates.length]
+    logger.info(
+      `🎯 Selected bound account by weighted priority: ${selected.name || selected.accountId} (${selected.accountType}, priority ${selected.priority}) for API key ${apiKeyData.name || apiKeyData.id}`
+    )
+    return {
+      accountId: selected.accountId,
+      accountType: selected.accountType
+    }
+  }
+
   async _getAllAvailableAccounts(apiKeyData, requestedModel = null, includeCcr = false) {
     const availableAccounts = []
     // 请求模型所属的限流家族（opus/sonnet/haiku/fable）

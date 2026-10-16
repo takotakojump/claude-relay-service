@@ -18,7 +18,8 @@ const ACCOUNT_TYPE_CONFIG = {
   gemini: { prefix: 'gemini_account:' },
   'gemini-api': { prefix: 'gemini_api_account:' },
   droid: { prefix: 'droid:account:' },
-  grok: { prefix: 'grok_account:' }
+  grok: { prefix: 'grok_account:' },
+  ccr: { prefix: 'ccr_account:' }
 }
 
 const ACCOUNT_TYPE_PRIORITY = [
@@ -30,7 +31,8 @@ const ACCOUNT_TYPE_PRIORITY = [
   'gemini',
   'gemini-api',
   'droid',
-  'grok'
+  'grok',
+  'ccr'
 ]
 
 const ACCOUNT_CATEGORY_MAP = {
@@ -42,7 +44,8 @@ const ACCOUNT_CATEGORY_MAP = {
   gemini: 'gemini',
   'gemini-api': 'gemini',
   droid: 'droid',
-  grok: 'grok'
+  grok: 'grok',
+  ccr: 'ccr'
 }
 
 /**

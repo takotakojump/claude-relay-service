@@ -4461,6 +4461,7 @@ const ACCOUNT_TYPE_LABELS = {
   gemini: 'Gemini',
   droid: 'Droid',
   grok: 'Grok',
+  ccr: 'CCR',
   deleted: '已删除',
   other: '其他'
 }
@@ -4492,6 +4493,9 @@ const normalizeFrontendAccountCategory = (type) => {
   }
   if (lower === 'grok') {
     return 'grok'
+  }
+  if (lower === 'ccr') {
+    return 'ccr'
   }
   return 'other'
 }

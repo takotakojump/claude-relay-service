@@ -917,7 +917,10 @@
                     class="h-3.5 w-3.5 rounded border-gray-300 text-blue-600 focus:ring-blue-500 dark:border-gray-600 dark:bg-gray-700"
                     type="checkbox"
                   />
-                  <span>CCR 账号不可用时回退共享账号池（关闭则直接报错，不使用其它账号）</span>
+                  <span
+                    >CCR 账号不可用时回退共享账号池（仅单独绑定 CCR 时生效；双绑定按 priority
+                    轮询）</span
+                  >
                 </label>
               </div>
               <div>
@@ -936,9 +939,10 @@
               </div>
             </div>
             <p class="mt-2 text-xs text-gray-500 dark:text-gray-400">
-              选择专属账号后此 Key 仅用该账号，不选则用共享池。绑定 CCR 后该 Key 的 Claude
-              请求会直连此 CCR 账号；若同时还绑定了 Claude 专属账号，则 Claude 优先、CCR
-              不生效（通常二选一即可）。
+              选择专属账号后此 Key 仅用该账号，不选则用共享池。仅绑定 CCR 时，Claude 请求会直连
+              CCR；同时绑定 Claude 专属账号和 CCR 时，普通 Claude
+              请求会在两个健康账号之间加权轮询，priority 数值越小分配比例越高，相同 priority 时为
+              1:1。账号不可用时会暂时跳过。使用 ccr, 前缀仍可强制只走 CCR。
             </p>
           </div>
 

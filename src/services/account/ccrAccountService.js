@@ -238,6 +238,45 @@ class CcrAccountService {
     return accountData
   }
 
+  /**
+   * Return the last session-window snapshot reported by the CCR upstream.
+   * The snapshot is kept separate from CRS usage counters because CCR
+   * providers may expose limits that cannot be reconstructed locally.
+   */
+  async getSessionWindowSnapshot(accountId) {
+    try {
+      const client = redis.getClientSafe()
+      const raw = await client.hget(`${this.ACCOUNT_KEY_PREFIX}${accountId}`, 'sessionWindow')
+      if (!raw) {
+        return null
+      }
+      const snapshot = typeof raw === 'string' ? JSON.parse(raw) : raw
+      return snapshot && typeof snapshot === 'object' ? snapshot : null
+    } catch (error) {
+      logger.warn(`⚠️ Failed to read CCR session window for ${accountId}:`, error.message)
+      return null
+    }
+  }
+
+  /** Persist a normalized snapshot from CCR response headers. */
+  async updateSessionWindowSnapshot(accountId, snapshot) {
+    if (!accountId || !snapshot || typeof snapshot !== 'object') {
+      return false
+    }
+
+    try {
+      const client = redis.getClientSafe()
+      await client.hset(`${this.ACCOUNT_KEY_PREFIX}${accountId}`, {
+        sessionWindow: JSON.stringify(snapshot),
+        sessionWindowUpdatedAt: snapshot.observedAt || new Date().toISOString()
+      })
+      return true
+    } catch (error) {
+      logger.warn(`⚠️ Failed to save CCR session window for ${accountId}:`, error.message)
+      return false
+    }
+  }
+
   // 📝 更新账户
   async updateAccount(accountId, updates) {
     try {

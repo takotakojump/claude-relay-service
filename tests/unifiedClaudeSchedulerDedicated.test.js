@@ -8,7 +8,7 @@
 
 const mockConfig = { claude: {} }
 
-jest.mock('../config/config', () => mockConfig)
+jest.mock('../config/config', () => mockConfig, { virtual: true })
 jest.mock('../src/services/account/claudeAccountService', () => ({
   isAccountRateLimited: jest.fn(),
   getAccountRateLimitInfo: jest.fn(),
@@ -18,9 +18,19 @@ jest.mock('../src/services/account/claudeAccountService', () => ({
 }))
 jest.mock('../src/services/account/claudeConsoleAccountService', () => ({}))
 jest.mock('../src/services/account/bedrockAccountService', () => ({}))
-jest.mock('../src/services/account/ccrAccountService', () => ({}))
+jest.mock('../src/services/account/ccrAccountService', () => ({
+  getAccount: jest.fn(),
+  isAccountRateLimited: jest.fn(),
+  isAccountQuotaExceeded: jest.fn(),
+  isAccountOverloaded: jest.fn(),
+  isSubscriptionExpired: jest.fn(),
+  isModelSupported: jest.fn(() => true)
+}))
 jest.mock('../src/services/accountGroupService', () => ({}))
-jest.mock('../src/models/redis', () => ({ getClaudeAccount: jest.fn() }))
+jest.mock('../src/models/redis', () => ({
+  getClaudeAccount: jest.fn(),
+  getClientSafe: jest.fn()
+}))
 jest.mock('../src/utils/logger', () => ({
   debug: jest.fn(),
   info: jest.fn(),
@@ -30,11 +40,14 @@ jest.mock('../src/utils/logger', () => ({
 }))
 jest.mock('../src/utils/commonHelper', () => ({
   isSchedulable: jest.fn((value) => value !== false && value !== 'false'),
-  sortAccountsByPriority: jest.fn((accounts) => accounts)
+  sortAccountsByPriority: jest.fn((accounts) =>
+    [...accounts].sort((a, b) => (Number(a.priority) || 50) - (Number(b.priority) || 50))
+  )
 }))
 jest.mock('../src/utils/upstreamErrorHelper', () => ({}))
 
 const claudeAccountService = require('../src/services/account/claudeAccountService')
+const ccrAccountService = require('../src/services/account/ccrAccountService')
 const redis = require('../src/models/redis')
 const scheduler = require('../src/services/scheduler/unifiedClaudeScheduler')
 
@@ -63,6 +76,12 @@ describe('dedicated (bound) Claude account never silently falls back to the shar
       rateLimitEndAt: '2026-07-07T07:00:00.000Z'
     })
     claudeAccountService.getAccountModelRateLimitInfo.mockResolvedValue({ resetAt: null })
+    ccrAccountService.getAccount.mockResolvedValue(null)
+    ccrAccountService.isAccountRateLimited.mockResolvedValue(false)
+    ccrAccountService.isAccountQuotaExceeded.mockResolvedValue(false)
+    ccrAccountService.isAccountOverloaded.mockResolvedValue(false)
+    ccrAccountService.isSubscriptionExpired.mockReturnValue(false)
+    redis.getClientSafe.mockReturnValue({ incr: jest.fn().mockResolvedValue(1) })
     tempSpy = jest.spyOn(scheduler, 'isAccountTemporarilyUnavailable').mockResolvedValue(false)
   })
 
@@ -149,5 +168,122 @@ describe('dedicated (bound) Claude account never silently falls back to the shar
     expect(poolSpy).toHaveBeenCalled()
 
     poolSpy.mockRestore()
+  })
+
+  it('includes both healthy bound accounts and gives the higher-priority account more slots', async () => {
+    const ccrId = 'ccr-wuejyo'
+    const apiKeyWithCcr = { ...apiKeyData, id: 'key-balanced', ccrAccountId: ccrId }
+    redis.getClaudeAccount.mockResolvedValue({ ...healthyAccount, priority: 10 })
+    ccrAccountService.getAccount.mockResolvedValue({
+      id: ccrId,
+      name: 'WuejyoTaro',
+      isActive: true,
+      status: 'active',
+      schedulable: true,
+      priority: 50,
+      supportedModels: []
+    })
+    const incr = jest.fn()
+    for (let value = 1; value <= 6; value += 1) {
+      incr.mockResolvedValueOnce(value)
+    }
+    redis.getClientSafe.mockReturnValue({ incr })
+
+    const selections = []
+    for (let i = 0; i < 6; i += 1) {
+      selections.push(
+        await scheduler.selectAccountForApiKey(apiKeyWithCcr, null, 'claude-sonnet-4-5')
+      )
+    }
+
+    expect(selections).toEqual([
+      { accountId: BOUND_ID, accountType: 'claude-official' },
+      { accountId: BOUND_ID, accountType: 'claude-official' },
+      { accountId: BOUND_ID, accountType: 'claude-official' },
+      { accountId: BOUND_ID, accountType: 'claude-official' },
+      { accountId: BOUND_ID, accountType: 'claude-official' },
+      { accountId: ccrId, accountType: 'ccr' }
+    ])
+  })
+
+  it('round-robins bound accounts 1:1 when their priorities are equal', async () => {
+    const ccrId = 'ccr-wuejyo'
+    const apiKeyWithCcr = { ...apiKeyData, id: 'key-balanced-tie', ccrAccountId: ccrId }
+    redis.getClaudeAccount.mockResolvedValue({
+      ...healthyAccount,
+      priority: 20,
+      lastUsedAt: '2026-07-07T07:00:00.000Z'
+    })
+    ccrAccountService.getAccount.mockResolvedValue({
+      id: ccrId,
+      name: 'WuejyoTaro',
+      isActive: true,
+      status: 'active',
+      schedulable: true,
+      priority: 20,
+      lastUsedAt: '2026-07-07T06:00:00.000Z',
+      supportedModels: []
+    })
+    const incr = jest.fn().mockResolvedValueOnce(1).mockResolvedValueOnce(2)
+    redis.getClientSafe.mockReturnValue({ incr })
+
+    await expect(
+      scheduler.selectAccountForApiKey(apiKeyWithCcr, null, 'claude-sonnet-4-5')
+    ).resolves.toEqual({ accountId: BOUND_ID, accountType: 'claude-official' })
+    await expect(
+      scheduler.selectAccountForApiKey(apiKeyWithCcr, null, 'claude-sonnet-4-5')
+    ).resolves.toEqual({ accountId: ccrId, accountType: 'ccr' })
+  })
+
+  it('does not let an existing Claude session binding disable dual-account balancing', async () => {
+    const ccrId = 'ccr-wuejyo'
+    const apiKeyWithCcr = { ...apiKeyData, id: 'key-bound-session', ccrAccountId: ccrId }
+    redis.getClaudeAccount.mockResolvedValue({ ...healthyAccount, priority: 50 })
+    ccrAccountService.getAccount.mockResolvedValue({
+      id: ccrId,
+      name: 'WuejyoTaro',
+      isActive: true,
+      status: 'active',
+      schedulable: true,
+      priority: 50,
+      supportedModels: []
+    })
+    const incr = jest.fn().mockResolvedValueOnce(1).mockResolvedValueOnce(2)
+    redis.getClientSafe.mockReturnValue({ incr })
+
+    await expect(
+      scheduler.selectAccountForApiKey(
+        apiKeyWithCcr,
+        null,
+        'claude-sonnet-4-5',
+        { accountId: BOUND_ID, accountType: 'claude-official' }
+      )
+    ).resolves.toEqual({ accountId: BOUND_ID, accountType: 'claude-official' })
+    await expect(
+      scheduler.selectAccountForApiKey(
+        apiKeyWithCcr,
+        null,
+        'claude-sonnet-4-5',
+        { accountId: BOUND_ID, accountType: 'claude-official' }
+      )
+    ).resolves.toEqual({ accountId: ccrId, accountType: 'ccr' })
+  })
+
+  it('uses the remaining bound account when the other account is unavailable', async () => {
+    const ccrId = 'ccr-wuejyo'
+    const apiKeyWithCcr = { ...apiKeyData, id: 'key-fallback', ccrAccountId: ccrId }
+    redis.getClaudeAccount.mockResolvedValue({ ...healthyAccount, isActive: 'false' })
+    ccrAccountService.getAccount.mockResolvedValue({
+      id: ccrId,
+      name: 'WuejyoTaro',
+      isActive: true,
+      status: 'active',
+      schedulable: true,
+      supportedModels: []
+    })
+
+    await expect(
+      scheduler.selectAccountForApiKey(apiKeyWithCcr, null, 'claude-sonnet-4-5')
+    ).resolves.toEqual({ accountId: ccrId, accountType: 'ccr' })
   })
 })

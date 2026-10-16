@@ -1240,6 +1240,44 @@
                       <span class="text-xs">N/A</span>
                     </div>
                   </div>
+                  <div v-else-if="account.platform === 'ccr'" class="space-y-1.5">
+                    <div
+                      v-for="window in getCcrSessionWindows(account)"
+                      :key="window.key"
+                      class="rounded-lg bg-gray-50 p-2 dark:bg-gray-700/70"
+                    >
+                      <div class="flex items-center gap-2">
+                        <span
+                          class="inline-flex min-w-[32px] justify-center rounded-full bg-teal-100 px-2 py-0.5 text-[11px] font-medium text-teal-700 dark:bg-teal-500/20 dark:text-teal-300"
+                        >
+                          {{ formatCcrWindowLabel(window.key) }}
+                        </span>
+                        <div class="flex-1">
+                          <div class="flex items-center gap-2">
+                            <div class="h-1.5 flex-1 rounded-full bg-gray-200 dark:bg-gray-600">
+                              <div
+                                :class="['h-1.5 rounded-full', getCcrWindowBarClass(window)]"
+                                :style="{ width: getCcrWindowWidth(window) }"
+                              />
+                            </div>
+                            <span class="w-12 text-right text-xs font-semibold">
+                              {{ formatCcrUtilization(window) }}
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+                      <div class="mt-1 text-[10px] text-gray-400 dark:text-gray-500">
+                        CCR 上游 · {{ window.status || 'upstream' }} · reset
+                        {{ formatCcrReset(window) }}
+                      </div>
+                    </div>
+                    <div
+                      v-if="getCcrSessionWindows(account).length === 0"
+                      class="text-xs text-gray-400"
+                    >
+                      等待 CCR 上游返回窗口数据
+                    </div>
+                  </div>
                   <div v-else-if="account.platform === 'grok'" class="space-y-1.5">
                     <div
                       v-if="account.authType === 'oauth' && account.grokUsage"
@@ -1655,8 +1693,31 @@
               </div>
             </div>
             <div>
-              <p class="text-xs text-gray-500 dark:text-gray-400">会话窗口</p>
-              <div v-if="account.usage && account.usage.sessionWindow" class="space-y-1">
+              <p class="text-xs text-gray-500 dark:text-gray-400">
+                会话窗口
+                <span v-if="account.platform === 'ccr'">（CCR 上游）</span>
+              </p>
+              <div v-if="account.platform === 'ccr'" class="space-y-1">
+                <div
+                  v-for="window in getCcrSessionWindows(account)"
+                  :key="window.key"
+                  class="flex items-center justify-between gap-2"
+                >
+                  <span class="text-xs text-gray-600 dark:text-gray-300">
+                    {{ formatCcrWindowLabel(window.key) }}
+                  </span>
+                  <span class="text-xs font-semibold text-gray-900 dark:text-gray-100">
+                    {{ formatCcrUtilization(window) }}
+                  </span>
+                </div>
+                <div
+                  v-if="getCcrSessionWindows(account).length === 0"
+                  class="text-sm font-semibold text-gray-400"
+                >
+                  等待上游数据
+                </div>
+              </div>
+              <div v-else-if="account.usage && account.usage.sessionWindow" class="space-y-1">
                 <div class="flex items-center gap-1.5">
                   <div class="h-1.5 w-1.5 rounded-full bg-purple-500" />
                   <p class="text-sm font-semibold text-gray-900 dark:text-gray-100">
@@ -1673,7 +1734,6 @@
               <div v-else class="text-sm font-semibold text-gray-400">-</div>
             </div>
           </div>
-
           <!-- 余额/配额 -->
           <div class="mb-3">
             <p class="mb-1 text-xs text-gray-500 dark:text-gray-400">余额/配额</p>
@@ -5085,6 +5145,50 @@ const hasAnyClaudeUsage = (claudeUsage) => {
         hasClaudeUsageWindow(claudeUsage.sevenDay) ||
         hasClaudeUsageWindow(claudeUsage.sevenDayOpus))
   )
+}
+
+// CCR window data is a direct snapshot of the upstream rate-limit headers.
+const getCcrSessionWindows = (account) => account?.usage?.sessionWindow?.windows || []
+
+const formatCcrWindowLabel = (key) => {
+  if (key === '7d_oi') return '7d Opus'
+  if (key === '7d') return '7d'
+  if (key === '5h') return '5h'
+  return key || 'window'
+}
+
+const getCcrUtilizationPercent = (window) => {
+  const value = Number(window?.utilization)
+  if (!Number.isFinite(value)) return null
+  // Anthropic headers normally use a 0..1 ratio; accept percent values too.
+  return Math.max(0, Math.min(100, value <= 1 ? value * 100 : value))
+}
+
+const formatCcrUtilization = (window) => {
+  const value = getCcrUtilizationPercent(window)
+  return value === null ? '-' : `${value.toFixed(1)}%`
+}
+
+const getCcrWindowWidth = (window) => {
+  const value = getCcrUtilizationPercent(window)
+  return value === null ? '0%' : `${Math.max(2, value)}%`
+}
+
+const getCcrWindowBarClass = (window) => {
+  const value = getCcrUtilizationPercent(window)
+  if (window?.status === 'rejected' || value >= 90) return 'bg-red-500'
+  if (window?.status === 'allowed_warning' || value >= 70) return 'bg-yellow-500'
+  return 'bg-teal-500'
+}
+
+const formatCcrReset = (window) => {
+  const raw = window?.reset
+  if (raw === null || raw === undefined || raw === '') return '-'
+  const timestamp = Number(raw)
+  const date = Number.isFinite(timestamp)
+    ? new Date(timestamp < 10000000000 ? timestamp * 1000 : timestamp)
+    : new Date(raw)
+  return Number.isNaN(date.getTime()) ? String(raw) : date.toLocaleString()
 }
 
 const normalizeClaudeUsagePercent = (window) => {

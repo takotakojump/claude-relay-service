@@ -107,7 +107,7 @@ function parseRateLimitWindows(headers) {
       family,
       isAccountWide: family === null
     }
-  }).filter((w) => w.status !== null || w.reset !== null)
+  }).filter((w) => w.status !== null || w.reset !== null || w.utilization !== null)
 }
 
 /**

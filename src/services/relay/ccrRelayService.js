@@ -6,6 +6,7 @@ const { parseVendorPrefixedModel } = require('../../utils/modelHelper')
 const userMessageQueueService = require('../userMessageQueueService')
 const { isStreamWritable } = require('../../utils/streamHelper')
 const upstreamErrorHelper = require('../../utils/upstreamErrorHelper')
+const { parseRateLimitWindows } = require('../../utils/rateLimitHeaderHelper')
 
 class CcrRelayService {
   constructor() {
@@ -223,6 +224,9 @@ class CcrRelayService {
         JSON.stringify(requestConfig.headers, null, 2)
       )
       const response = await axios(requestConfig)
+
+      // Preserve quota/session-window data reported by the CCR provider.
+      await this._persistSessionWindowSnapshot(accountId, response.headers)
 
       // 📬 请求已发送成功，立即释放队列锁（无需等待响应处理完成）
       // 因为 Claude API 限流基于请求发送时刻计算（RPM），不是请求完成时刻
@@ -636,6 +640,7 @@ class CcrRelayService {
       // - queueLockAcquired = false 的赋值会在 finally 执行前完成（JS 单线程保证）
       request
         .then(async (response) => {
+          await this._persistSessionWindowSnapshot(accountId, response.headers)
           logger.debug(`🌊 CCR stream response status: ${response.status}`)
 
           // 错误响应处理
@@ -688,7 +693,8 @@ class CcrRelayService {
               const errorHeaders = {
                 'Content-Type': response.headers['content-type'] || 'application/json',
                 'Cache-Control': 'no-cache',
-                Connection: existingConnection || 'keep-alive'
+                Connection: existingConnection || 'keep-alive',
+                ...this._getSessionWindowResponseHeaders(response.headers)
               }
               // 避免 Transfer-Encoding 冲突，让 Express 自动处理
               delete errorHeaders['Transfer-Encoding']
@@ -753,7 +759,14 @@ class CcrRelayService {
               'Cache-Control': 'no-cache',
               Connection: existingConnection || 'keep-alive',
               'Access-Control-Allow-Origin': '*',
-              'Access-Control-Allow-Headers': 'Cache-Control'
+              'Access-Control-Allow-Headers': 'Cache-Control',
+              ...this._getSessionWindowResponseHeaders(response.headers)
+            }
+            const exposedHeaders = Object.keys(
+              this._getSessionWindowResponseHeaders(response.headers)
+            )
+            if (exposedHeaders.length > 0) {
+              headers['Access-Control-Expose-Headers'] = exposedHeaders.join(', ')
             }
             responseStream.writeHead(200, headers)
           }
@@ -928,6 +941,60 @@ class CcrRelayService {
     }
 
     return null
+  }
+
+  /** Return rate-limit headers that can be safely relayed to the client. */
+  _getSessionWindowResponseHeaders(headers) {
+    if (!headers || typeof headers !== 'object') {
+      return {}
+    }
+
+    const passthrough = {}
+    for (const [name, value] of Object.entries(headers)) {
+      const lowerName = name.toLowerCase()
+      if (lowerName.startsWith('anthropic-ratelimit-') || lowerName.startsWith('x-ratelimit-')) {
+        passthrough[name] = value
+      }
+    }
+    return passthrough
+  }
+
+  _buildSessionWindowSnapshot(headers) {
+    const windows = parseRateLimitWindows(headers)
+    const passthroughHeaders = this._getSessionWindowResponseHeaders(headers)
+    if (windows.length === 0 && Object.keys(passthroughHeaders).length === 0) {
+      return null
+    }
+
+    const getHeader = (name) => {
+      const lowerName = name.toLowerCase()
+      const entry = Object.entries(headers || {}).find(([key]) => key.toLowerCase() === lowerName)
+      return entry ? entry[1] : null
+    }
+
+    return {
+      source: 'ccr-upstream',
+      observedAt: new Date().toISOString(),
+      windows,
+      representativeClaim: getHeader('anthropic-ratelimit-unified-representative-claim'),
+      status: getHeader('anthropic-ratelimit-unified-status'),
+      reset: getHeader('anthropic-ratelimit-unified-reset'),
+      headers: passthroughHeaders
+    }
+  }
+
+  async _persistSessionWindowSnapshot(accountId, headers) {
+    const snapshot = this._buildSessionWindowSnapshot(headers)
+    if (!snapshot) {
+      return null
+    }
+
+    try {
+      await ccrAccountService.updateSessionWindowSnapshot(accountId, snapshot)
+    } catch (error) {
+      logger.warn(`⚠️ Failed to persist CCR session window for ${accountId}:`, error.message)
+    }
+    return snapshot
   }
 
   // 🔍 过滤客户端请求头

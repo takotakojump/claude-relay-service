@@ -11,6 +11,12 @@ const { extractErrorMessage } = require('../../utils/testPayloadHelper')
 
 const router = express.Router()
 
+/* CCR usage is reported by the upstream provider through response headers. */
+
+async function getCcrSessionWindow(accountId) {
+  return ccrAccountService.getSessionWindowSnapshot(accountId)
+}
+
 // 🔧 CCR 账户管理
 
 // 获取所有CCR账户
@@ -50,6 +56,7 @@ router.get('/', authenticateAdmin, async (req, res) => {
         try {
           const usageStats = await redis.getAccountUsageStats(account.id)
           const groupInfos = await accountGroupService.getAccountGroups(account.id)
+          const sessionWindow = await getCcrSessionWindow(account.id)
 
           const formattedAccount = formatAccountExpiry(account)
           return {
@@ -60,7 +67,8 @@ router.get('/', authenticateAdmin, async (req, res) => {
             usage: {
               daily: usageStats.daily,
               total: usageStats.total,
-              averages: usageStats.averages
+              averages: usageStats.averages,
+              sessionWindow
             }
           }
         } catch (statsError) {
@@ -79,7 +87,8 @@ router.get('/', authenticateAdmin, async (req, res) => {
               usage: {
                 daily: { tokens: 0, requests: 0, allTokens: 0 },
                 total: { tokens: 0, requests: 0, allTokens: 0 },
-                averages: { rpm: 0, tpm: 0 }
+                averages: { rpm: 0, tpm: 0 },
+                sessionWindow: await getCcrSessionWindow(account.id)
               }
             }
           } catch (groupError) {
@@ -93,7 +102,8 @@ router.get('/', authenticateAdmin, async (req, res) => {
               usage: {
                 daily: { tokens: 0, requests: 0, allTokens: 0 },
                 total: { tokens: 0, requests: 0, allTokens: 0 },
-                averages: { rpm: 0, tpm: 0 }
+                averages: { rpm: 0, tpm: 0 },
+                sessionWindow: await getCcrSessionWindow(account.id)
               }
             }
           }
