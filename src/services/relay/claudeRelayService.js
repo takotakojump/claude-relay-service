@@ -181,6 +181,93 @@ class ClaudeRelayService {
     return undefined
   }
 
+  /**
+   * Keep Anthropic's quota headers available when a Claude stream is relayed
+   * through another CRS instance (for example, a CCR account whose upstream
+   * URL points at CRS).  The stream body is forwarded line by line, so these
+   * headers must be written before the first chunk; otherwise Node commits a
+   * response with no upstream quota information and the downstream CCR cannot
+   * persist its session-window snapshot.
+   */
+  _getSessionWindowResponseHeaders(headers) {
+    if (!headers || typeof headers !== 'object') {
+      return {}
+    }
+
+    const passthrough = {}
+    for (const [name, value] of Object.entries(headers)) {
+      const lowerName = name.toLowerCase()
+      if (lowerName.startsWith('anthropic-ratelimit-') || lowerName.startsWith('x-ratelimit-')) {
+        passthrough[name] = value
+      }
+    }
+    return passthrough
+  }
+
+  _setClaudeStreamQuotaHeaders(responseStream, upstreamHeaders) {
+    if (
+      !responseStream ||
+      responseStream.headersSent ||
+      typeof responseStream.setHeader !== 'function'
+    ) {
+      return {}
+    }
+
+    const quotaHeaders = this._getSessionWindowResponseHeaders(upstreamHeaders)
+    Object.entries(quotaHeaders).forEach(([name, value]) => {
+      responseStream.setHeader(name, value)
+    })
+
+    if (Object.keys(quotaHeaders).length > 0) {
+      const existingExpose = responseStream.getHeader
+        ? responseStream.getHeader('Access-Control-Expose-Headers')
+        : null
+      const exposed = new Set(
+        String(existingExpose || '')
+          .split(',')
+          .map((name) => name.trim())
+          .filter(Boolean)
+      )
+      Object.keys(quotaHeaders).forEach((name) => exposed.add(name))
+      responseStream.setHeader('Access-Control-Expose-Headers', [...exposed].join(', '))
+    }
+
+    return quotaHeaders
+  }
+
+  _writeClaudeStreamResponseHeaders(responseStream, upstreamResponse) {
+    if (
+      !responseStream ||
+      responseStream.headersSent ||
+      typeof responseStream.writeHead !== 'function'
+    ) {
+      return false
+    }
+
+    const upstreamHeaders = upstreamResponse?.headers || {}
+    const quotaHeaders = this._getSessionWindowResponseHeaders(upstreamHeaders)
+    const existingConnection = responseStream.getHeader
+      ? responseStream.getHeader('Connection')
+      : null
+    const headers = {
+      'Content-Type': upstreamHeaders['content-type'] || 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      Connection: existingConnection || 'keep-alive',
+      'X-Accel-Buffering': 'no',
+      ...quotaHeaders
+    }
+
+    if (Object.keys(quotaHeaders).length > 0) {
+      headers['Access-Control-Expose-Headers'] = Object.keys(quotaHeaders).join(', ')
+    }
+
+    responseStream.writeHead(upstreamResponse?.statusCode || 200, headers)
+    logger.debug(
+      `[Claude Stream] forwarded ${Object.keys(quotaHeaders).length} upstream quota headers: ${Object.keys(quotaHeaders).join(', ') || 'none'}`
+    )
+    return true
+  }
+
   _extractTextFromContent(content) {
     if (typeof content === 'string') {
       return content
@@ -2217,6 +2304,8 @@ class ClaudeRelayService {
         logger.debug(`🌊 Claude stream response status: ${res.statusCode}`)
 
         // 错误响应处理
+        this._setClaudeStreamQuotaHeaders(responseStream, res.headers)
+
         if (res.statusCode !== 200) {
           if (res.statusCode === 429) {
             // 💰 先读取完整 body 以区分 "Extra usage required" 和真正的限流
@@ -2669,6 +2758,11 @@ class ClaudeRelayService {
 
         // 📬 收到成功响应头（HTTP 200），立即调用回调释放队列锁
         // 此时请求已被 Claude API 接受并计入 RPM 配额，无需等待响应完成
+        // Commit the upstream quota headers before the first SSE chunk is
+        // written. Without this, a downstream CCR/CRS instance sees only the
+        // stream body and cannot persist the provider's session window.
+        this._writeClaudeStreamResponseHeaders(responseStream, res)
+
         if (onResponseStart && typeof onResponseStart === 'function') {
           try {
             await onResponseStart()

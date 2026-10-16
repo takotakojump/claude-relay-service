@@ -226,6 +226,9 @@ class CcrRelayService {
       const response = await axios(requestConfig)
 
       // Preserve quota/session-window data reported by the CCR provider.
+      logger.debug(
+        `[CCR] upstream response header names: ${Object.keys(response.headers || {}).join(', ') || 'none'}`
+      )
       await this._persistSessionWindowSnapshot(accountId, response.headers)
 
       // 📬 请求已发送成功，立即释放队列锁（无需等待响应处理完成）
@@ -640,6 +643,9 @@ class CcrRelayService {
       // - queueLockAcquired = false 的赋值会在 finally 执行前完成（JS 单线程保证）
       request
         .then(async (response) => {
+          logger.debug(
+            `[CCR] upstream stream response header names: ${Object.keys(response.headers || {}).join(', ') || 'none'}`
+          )
           await this._persistSessionWindowSnapshot(accountId, response.headers)
           logger.debug(`🌊 CCR stream response status: ${response.status}`)
 
