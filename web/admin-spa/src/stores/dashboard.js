@@ -63,6 +63,8 @@ export const useDashboardStore = defineStore('dashboard', () => {
     data: [],
     topAccounts: [],
     totalAccounts: 0,
+    accountTotals: [],
+    loadBalance: null,
     group: 'claude',
     groupLabel: 'Claude账户'
   })
@@ -487,6 +489,11 @@ export const useDashboardStore = defineStore('dashboard', () => {
                 : 30
             : calculateDaysBetween(dateFilter.value.customStart, dateFilter.value.customEnd)
         url += `granularity=day&days=${days}`
+
+        if (dateFilter.value.type === 'custom' && dateFilter.value.customRange?.length === 2) {
+          url += `&startDate=${encodeURIComponent(systemTimeStringToISO(dateFilter.value.customRange[0]))}`
+          url += `&endDate=${encodeURIComponent(systemTimeStringToISO(dateFilter.value.customRange[1]))}`
+        }
       }
 
       url += `&group=${group}`
@@ -497,6 +504,8 @@ export const useDashboardStore = defineStore('dashboard', () => {
           data: response.data || [],
           topAccounts: response.topAccounts || [],
           totalAccounts: response.totalAccounts || 0,
+          accountTotals: response.accountTotals || response.loadBalance?.accounts || [],
+          loadBalance: response.loadBalance || null,
           group: response.group || group,
           groupLabel: response.groupLabel || ''
         }

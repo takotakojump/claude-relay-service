@@ -687,6 +687,131 @@
       </div>
     </div>
 
+    <!-- 负载均衡概况 -->
+    <div class="mb-4 sm:mb-6 md:mb-8">
+      <div class="card p-4 sm:p-6">
+        <div class="mb-4 flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+          <h3 class="text-base font-semibold text-gray-900 dark:text-gray-100 sm:text-lg">
+            负载均衡概况
+          </h3>
+          <span class="text-xs text-gray-500 dark:text-gray-400 sm:text-sm">
+            按当前时间范围统计实际请求分配
+          </span>
+        </div>
+
+        <div class="grid grid-cols-1 gap-6 lg:grid-cols-2">
+          <div>
+            <div class="mb-3 flex items-center justify-between">
+              <h4 class="text-sm font-semibold text-gray-800 dark:text-gray-200 sm:text-base">
+                模型负载
+              </h4>
+              <span class="text-xs text-gray-500 dark:text-gray-400">请求数 / Token</span>
+            </div>
+            <div v-if="modelLoadRows.length === 0" class="py-6 text-center text-sm text-gray-500">
+              暂无模型请求数据
+            </div>
+            <div v-else class="overflow-x-auto">
+              <table class="min-w-full">
+                <thead class="bg-gray-50 dark:bg-gray-700">
+                  <tr>
+                    <th
+                      class="px-2 py-2 text-left text-xs font-medium text-gray-600 dark:text-gray-300"
+                    >
+                      模型
+                    </th>
+                    <th
+                      class="px-2 py-2 text-right text-xs font-medium text-gray-600 dark:text-gray-300"
+                    >
+                      请求
+                    </th>
+                    <th
+                      class="px-2 py-2 text-right text-xs font-medium text-gray-600 dark:text-gray-300"
+                    >
+                      Token
+                    </th>
+                  </tr>
+                </thead>
+                <tbody class="divide-y divide-gray-200 dark:divide-gray-600">
+                  <tr v-for="row in modelLoadRows" :key="row.model">
+                    <td
+                      class="max-w-[180px] truncate px-2 py-2 text-xs text-gray-900 dark:text-gray-100"
+                      :title="row.model"
+                    >
+                      {{ row.model }}
+                    </td>
+                    <td class="px-2 py-2 text-right text-xs text-gray-600 dark:text-gray-300">
+                      {{ formatNumber(row.requests) }}
+                      <span class="text-blue-600">({{ row.requestPercentage }}%)</span>
+                    </td>
+                    <td class="px-2 py-2 text-right text-xs text-gray-600 dark:text-gray-300">
+                      {{ formatNumber(row.tokens) }}
+                      <span class="text-emerald-600">({{ row.tokenPercentage }}%)</span>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div>
+            <div class="mb-3 flex items-center justify-between">
+              <h4 class="text-sm font-semibold text-gray-800 dark:text-gray-200 sm:text-base">
+                账号负载（{{ accountUsageTrendData.groupLabel || 'Claude / CCR' }}）
+              </h4>
+              <span class="text-xs text-gray-500 dark:text-gray-400">请求数 / Token</span>
+            </div>
+            <div v-if="accountLoadRows.length === 0" class="py-6 text-center text-sm text-gray-500">
+              暂无账号请求数据
+            </div>
+            <div v-else class="overflow-x-auto">
+              <table class="min-w-full">
+                <thead class="bg-gray-50 dark:bg-gray-700">
+                  <tr>
+                    <th
+                      class="px-2 py-2 text-left text-xs font-medium text-gray-600 dark:text-gray-300"
+                    >
+                      账号
+                    </th>
+                    <th
+                      class="px-2 py-2 text-right text-xs font-medium text-gray-600 dark:text-gray-300"
+                    >
+                      请求
+                    </th>
+                    <th
+                      class="px-2 py-2 text-right text-xs font-medium text-gray-600 dark:text-gray-300"
+                    >
+                      Token
+                    </th>
+                  </tr>
+                </thead>
+                <tbody class="divide-y divide-gray-200 dark:divide-gray-600">
+                  <tr v-for="row in accountLoadRows" :key="`${row.platform}:${row.id}`">
+                    <td
+                      class="max-w-[180px] truncate px-2 py-2 text-xs text-gray-900 dark:text-gray-100"
+                      :title="row.name"
+                    >
+                      <span
+                        class="mr-1 rounded bg-gray-100 px-1 py-0.5 text-[10px] text-gray-500 dark:bg-gray-700 dark:text-gray-300"
+                        >{{ row.platform }}</span
+                      >{{ row.name }}
+                    </td>
+                    <td class="px-2 py-2 text-right text-xs text-gray-600 dark:text-gray-300">
+                      {{ formatNumber(row.requests) }}
+                      <span class="text-blue-600">({{ row.requestPercentage }}%)</span>
+                    </td>
+                    <td class="px-2 py-2 text-right text-xs text-gray-600 dark:text-gray-300">
+                      {{ formatNumber(row.tokens) }}
+                      <span class="text-emerald-600">({{ row.tokenPercentage }}%)</span>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- API Keys 使用趋势图 -->
     <div class="mb-4 sm:mb-6 md:mb-8">
       <div class="card p-4 sm:p-6">
@@ -842,12 +967,69 @@ let apiKeysUsageTrendChartInstance = null
 let accountUsageTrendChartInstance = null
 
 const accountGroupOptions = [
-  { value: 'claude', label: 'Claude' },
+  { value: 'claude', label: 'Claude / CCR' },
   { value: 'openai', label: 'OpenAI' },
   { value: 'gemini', label: 'Gemini' },
   { value: 'droid', label: 'Droid' },
   { value: 'grok', label: 'Grok' }
 ]
+
+const modelLoadRows = computed(() => {
+  const stats = Array.isArray(dashboardModelStats.value) ? dashboardModelStats.value : []
+  const totalRequests = stats.reduce((sum, stat) => sum + (Number(stat.requests) || 0), 0)
+  const totalTokens = stats.reduce((sum, stat) => sum + (Number(stat.allTokens) || 0), 0)
+
+  return stats
+    .map((stat) => {
+      const requests = Number(stat.requests) || 0
+      const tokens = Number(stat.allTokens) || 0
+      return {
+        model: stat.model || 'unknown',
+        requests,
+        tokens,
+        requestPercentage:
+          totalRequests > 0 ? ((requests / totalRequests) * 100).toFixed(1) : '0.0',
+        tokenPercentage: totalTokens > 0 ? ((tokens / totalTokens) * 100).toFixed(1) : '0.0'
+      }
+    })
+    .sort((a, b) => b.tokens - a.tokens)
+})
+
+const accountLoadRows = computed(() => {
+  const totals = accountUsageTrendData.value?.accountTotals
+  if (Array.isArray(totals) && totals.length > 0) {
+    return totals
+  }
+
+  const aggregate = new Map()
+  for (const point of accountUsageTrendData.value?.data || []) {
+    for (const [id, data] of Object.entries(point.accounts || {})) {
+      const key = `${data.platform || accountUsageTrendData.value.group || 'unknown'}:${id}`
+      const row = aggregate.get(key) || {
+        id,
+        name: data.name || id,
+        platform: data.platform || accountUsageTrendData.value.group || 'unknown',
+        requests: 0,
+        tokens: 0
+      }
+      row.requests += Number(data.requests) || 0
+      row.tokens += Number(data.tokens ?? data.allTokens) || 0
+      aggregate.set(key, row)
+    }
+  }
+
+  const rows = Array.from(aggregate.values())
+  const totalRequests = rows.reduce((sum, row) => sum + row.requests, 0)
+  const totalTokens = rows.reduce((sum, row) => sum + row.tokens, 0)
+  return rows
+    .map((row) => ({
+      ...row,
+      requestPercentage:
+        totalRequests > 0 ? ((row.requests / totalRequests) * 100).toFixed(1) : '0.0',
+      tokenPercentage: totalTokens > 0 ? ((row.tokens / totalTokens) * 100).toFixed(1) : '0.0'
+    }))
+    .sort((a, b) => b.tokens - a.tokens)
+})
 
 const accountTrendUpdating = ref(false)
 

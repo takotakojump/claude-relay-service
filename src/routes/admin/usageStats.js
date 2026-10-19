@@ -1257,7 +1257,7 @@ router.get('/account-usage-trend', authenticateAdmin, async (req, res) => {
     }
 
     const groupLabels = {
-      claude: 'Claude账户',
+      claude: 'Claude / CCR账户',
       openai: 'OpenAI账户',
       gemini: 'Gemini账户',
       droid: 'Droid账户',
@@ -1268,9 +1268,10 @@ router.get('/account-usage-trend', authenticateAdmin, async (req, res) => {
     // 拉取各平台账号列表
     let accounts = []
     if (group === 'claude') {
-      const [claudeAccounts, claudeConsoleAccounts] = await Promise.all([
+      const [claudeAccounts, claudeConsoleAccounts, ccrAccounts] = await Promise.all([
         claudeAccountService.getAllAccounts(),
-        claudeConsoleAccountService.getAllAccounts()
+        claudeConsoleAccountService.getAllAccounts(),
+        ccrAccountService.getAllAccounts()
       ])
 
       accounts = [
@@ -1290,6 +1291,15 @@ router.get('/account-usage-trend', authenticateAdmin, async (req, res) => {
             id,
             name: account.name || `Console账号 ${shortId}`,
             platform: 'claude-console'
+          }
+        }),
+        ...ccrAccounts.map((account) => {
+          const id = String(account.id || '')
+          const shortId = id ? id.slice(0, 8) : '未知'
+          return {
+            id,
+            name: account.name || account.email || `CCR账户 ${shortId}`,
+            platform: 'ccr'
           }
         })
       ]
@@ -1389,7 +1399,13 @@ router.get('/account-usage-trend', authenticateAdmin, async (req, res) => {
         group,
         groupLabel: groupLabels[group],
         topAccounts: [],
-        totalAccounts: 0
+        totalAccounts: 0,
+        accountTotals: [],
+        loadBalance: {
+          totalRequests: 0,
+          totalTokens: 0,
+          accounts: []
+        }
       })
     }
 
@@ -1412,6 +1428,19 @@ router.get('/account-usage-trend', authenticateAdmin, async (req, res) => {
 
     const trendData = []
     const accountCostTotals = new Map()
+    const accountTokenTotals = new Map()
+    const accountRequestTotals = new Map()
+
+    const addAccountTotals = (accountId, data) => {
+      accountTokenTotals.set(
+        accountId,
+        (accountTokenTotals.get(accountId) || 0) + (Number(data?.allTokens) || 0)
+      )
+      accountRequestTotals.set(
+        accountId,
+        (accountRequestTotals.get(accountId) || 0) + (Number(data?.requests) || 0)
+      )
+    }
 
     if (granularity === 'hour') {
       let startTime
@@ -1604,27 +1633,71 @@ router.get('/account-usage-trend', authenticateAdmin, async (req, res) => {
 
           hourData.accounts[accountId] = {
             name: accountInfo ? accountInfo.name : `账号 ${accountId.slice(0, 8)}`,
+            platform: accountInfo?.platform || group,
             cost,
             formattedCost,
-            requests
+            requests,
+            tokens: allTokens,
+            allTokens,
+            inputTokens,
+            outputTokens
           }
 
           accountCostTotals.set(accountId, (accountCostTotals.get(accountId) || 0) + cost)
+          addAccountTotals(accountId, { allTokens, requests })
         }
 
         trendData.push(hourData)
       }
     } else {
       const daysCount = parseInt(days) || 7
-      const today = new Date()
+      const requestedEnd = endDate ? new Date(endDate) : new Date()
+      const requestedStart = startDate
+        ? new Date(startDate)
+        : new Date(requestedEnd.getTime() - (daysCount - 1) * 24 * 60 * 60 * 1000)
+
+      if (
+        Number.isNaN(requestedStart.getTime()) ||
+        Number.isNaN(requestedEnd.getTime()) ||
+        requestedStart > requestedEnd
+      ) {
+        return res.status(400).json({
+          success: false,
+          error: 'Invalid date range'
+        })
+      }
+
+      const rangeDays =
+        Math.ceil((requestedEnd.getTime() - requestedStart.getTime()) / (24 * 60 * 60 * 1000)) + 1
+      if (rangeDays > 365) {
+        return res.status(400).json({
+          success: false,
+          error: 'Date range cannot exceed 365 days'
+        })
+      }
 
       // 收集所有天的元数据
       const dayInfos = []
-      for (let i = 0; i < daysCount; i++) {
-        const date = new Date(today)
-        date.setDate(date.getDate() - i)
-        const dateStr = redis.getDateStringInTimezone(date)
+      const startInTimezone = redis.getDateInTimezone(requestedStart)
+      const endInTimezone = redis.getDateInTimezone(requestedEnd)
+      const cursor = new Date(
+        Date.UTC(
+          startInTimezone.getUTCFullYear(),
+          startInTimezone.getUTCMonth(),
+          startInTimezone.getUTCDate()
+        )
+      )
+      const endCursor = new Date(
+        Date.UTC(
+          endInTimezone.getUTCFullYear(),
+          endInTimezone.getUTCMonth(),
+          endInTimezone.getUTCDate()
+        )
+      )
+      while (cursor <= endCursor) {
+        const dateStr = `${cursor.getUTCFullYear()}-${String(cursor.getUTCMonth() + 1).padStart(2, '0')}-${String(cursor.getUTCDate()).padStart(2, '0')}`
         dayInfos.push({ dateStr })
+        cursor.setUTCDate(cursor.getUTCDate() + 1)
       }
 
       // 使用索引获取数据
@@ -1781,12 +1854,18 @@ router.get('/account-usage-trend', authenticateAdmin, async (req, res) => {
 
           dayData.accounts[accountId] = {
             name: accountInfo ? accountInfo.name : `账号 ${accountId.slice(0, 8)}`,
+            platform: accountInfo?.platform || group,
             cost,
             formattedCost,
-            requests
+            requests,
+            tokens: allTokens,
+            allTokens,
+            inputTokens,
+            outputTokens
           }
 
           accountCostTotals.set(accountId, (accountCostTotals.get(accountId) || 0) + cost)
+          addAccountTotals(accountId, { allTokens, requests })
         }
 
         trendData.push(dayData)
@@ -1804,6 +1883,39 @@ router.get('/account-usage-trend', authenticateAdmin, async (req, res) => {
       .slice(0, 20)
       .map(([accountId]) => accountId)
 
+    const totalAccountTokens = Array.from(accountTokenTotals.values()).reduce(
+      (sum, value) => sum + value,
+      0
+    )
+    const totalAccountRequests = Array.from(accountRequestTotals.values()).reduce(
+      (sum, value) => sum + value,
+      0
+    )
+    const accountTotals = Array.from(accountTokenTotals.keys())
+      .map((accountId) => {
+        const accountInfo = accountMap.get(accountId) || {}
+        const tokens = accountTokenTotals.get(accountId) || 0
+        const requests = accountRequestTotals.get(accountId) || 0
+        const cost = accountCostTotals.get(accountId) || 0
+        return {
+          id: accountId,
+          name: accountInfo.name || `账号 ${accountId.slice(0, 8)}`,
+          platform: accountInfo.platform || group,
+          requests,
+          tokens,
+          allTokens: tokens,
+          cost,
+          formattedCost: CostCalculator.formatCost(cost),
+          requestPercentage:
+            totalAccountRequests > 0
+              ? Number(((requests / totalAccountRequests) * 100).toFixed(1))
+              : 0,
+          tokenPercentage:
+            totalAccountTokens > 0 ? Number(((tokens / totalAccountTokens) * 100).toFixed(1)) : 0
+        }
+      })
+      .sort((a, b) => b.tokens - a.tokens)
+
     return res.json({
       success: true,
       data: trendData,
@@ -1811,7 +1923,13 @@ router.get('/account-usage-trend', authenticateAdmin, async (req, res) => {
       group,
       groupLabel: groupLabels[group],
       topAccounts,
-      totalAccounts: accountCostTotals.size
+      totalAccounts: accountTotals.length,
+      accountTotals,
+      loadBalance: {
+        totalRequests: totalAccountRequests,
+        totalTokens: totalAccountTokens,
+        accounts: accountTotals
+      }
     })
   } catch (error) {
     logger.error('❌ Failed to get account usage trend:', error)
