@@ -14,7 +14,8 @@ jest.mock('../src/services/account/claudeAccountService', () => ({
   getAccountRateLimitInfo: jest.fn(),
   isAccountModelRateLimited: jest.fn(),
   getAccountModelRateLimitInfo: jest.fn(),
-  clearExpiredModelRateLimit: jest.fn()
+  clearExpiredModelRateLimit: jest.fn(),
+  isAccountOverloaded: jest.fn()
 }))
 jest.mock('../src/services/account/claudeConsoleAccountService', () => ({}))
 jest.mock('../src/services/account/bedrockAccountService', () => ({}))
@@ -71,6 +72,7 @@ describe('dedicated (bound) Claude account never silently falls back to the shar
     mockConfig.claude = {}
     claudeAccountService.isAccountRateLimited.mockResolvedValue(false)
     claudeAccountService.isAccountModelRateLimited.mockResolvedValue(false)
+    claudeAccountService.isAccountOverloaded.mockResolvedValue(false)
     claudeAccountService.clearExpiredModelRateLimit.mockResolvedValue({ success: true })
     claudeAccountService.getAccountRateLimitInfo.mockResolvedValue({
       rateLimitEndAt: '2026-07-07T07:00:00.000Z'
@@ -233,6 +235,41 @@ describe('dedicated (bound) Claude account never silently falls back to the shar
     await expect(
       scheduler.selectAccountForApiKey(apiKeyWithCcr, null, 'claude-sonnet-4-5')
     ).resolves.toEqual({ accountId: ccrId, accountType: 'ccr' })
+  })
+
+  it('keeps each dual-bound session sticky while balancing new sessions', async () => {
+    const ccrId = 'ccr-wuejyo'
+    const apiKeyWithCcr = { ...apiKeyData, id: 'key-sticky-balanced', ccrAccountId: ccrId }
+    redis.getClaudeAccount.mockResolvedValue({ ...healthyAccount, priority: 50 })
+    ccrAccountService.getAccount.mockResolvedValue({
+      id: ccrId,
+      name: 'WuejyoTaro',
+      isActive: true,
+      status: 'active',
+      schedulable: true,
+      priority: 50,
+      supportedModels: []
+    })
+
+    const mappings = new Map()
+    const incr = jest.fn().mockResolvedValueOnce(1).mockResolvedValueOnce(2)
+    redis.getClientSafe.mockReturnValue({
+      incr,
+      get: jest.fn(async (key) => mappings.get(key) || null),
+      setex: jest.fn(async (key, _ttl, value) => mappings.set(key, value)),
+      ttl: jest.fn().mockResolvedValue(3600)
+    })
+
+    await expect(
+      scheduler.selectAccountForApiKey(apiKeyWithCcr, 'session-a', 'claude-sonnet-4-5')
+    ).resolves.toEqual({ accountId: BOUND_ID, accountType: 'claude-official' })
+    await expect(
+      scheduler.selectAccountForApiKey(apiKeyWithCcr, 'session-a', 'claude-sonnet-4-5')
+    ).resolves.toEqual({ accountId: BOUND_ID, accountType: 'claude-official' })
+    await expect(
+      scheduler.selectAccountForApiKey(apiKeyWithCcr, 'session-b', 'claude-sonnet-4-5')
+    ).resolves.toEqual({ accountId: ccrId, accountType: 'ccr' })
+    expect(incr).toHaveBeenCalledTimes(2)
   })
 
   it('does not let an existing Claude session binding disable dual-account balancing', async () => {

@@ -258,7 +258,8 @@ class UnifiedClaudeScheduler {
         const balancedAccount = await this._selectBoundClaudeCcrBalancedAccount(
           apiKeyData,
           effectiveModel,
-          requestedModelFamily
+          requestedModelFamily,
+          sessionHash
         )
         if (balancedAccount) {
           return balancedAccount
@@ -592,7 +593,52 @@ class UnifiedClaudeScheduler {
    * Returns null when neither account is currently usable so the existing
    * dedicated-account error handling can report the precise reason.
    */
-  async _selectBoundClaudeCcrBalancedAccount(apiKeyData, requestedModel, requestedModelFamily) {
+  async _selectBoundClaudeCcrBalancedAccount(
+    apiKeyData,
+    requestedModel,
+    requestedModelFamily,
+    sessionHash = null
+  ) {
+    const boundAccounts = new Map([
+      [apiKeyData.claudeAccountId, 'claude-official'],
+      [apiKeyData.ccrAccountId, 'ccr']
+    ])
+
+    // Preserve the normal sticky-session behavior for a dual-bound API key.
+    // A session stays on the same bound account until its mapping expires or
+    // that account becomes unavailable; only new sessions enter the weighted
+    // Claude/CCR rotation below.
+    if (sessionHash) {
+      try {
+        const mappedAccount = await this._getSessionMapping(sessionHash)
+        const mappedAccountType = boundAccounts.get(mappedAccount?.accountId)
+        if (mappedAccount && mappedAccountType === mappedAccount.accountType) {
+          const isAvailable = await this._isAccountAvailable(
+            mappedAccount.accountId,
+            mappedAccount.accountType,
+            requestedModel
+          )
+          if (isAvailable) {
+            await this._extendSessionMappingTTL(sessionHash)
+            logger.info(
+              `🎯 Using sticky dual-bound account: ${mappedAccount.accountId} (${mappedAccount.accountType}) for session ${sessionHash}`
+            )
+            return mappedAccount
+          }
+
+          logger.warn(
+            `⚠️ Sticky dual-bound account ${mappedAccount.accountId} is no longer available, selecting a new account`
+          )
+          await this._deleteSessionMapping(sessionHash)
+        }
+      } catch (error) {
+        logger.warn(
+          `⚠️ Failed to evaluate sticky dual-bound session ${sessionHash}:`,
+          error.message
+        )
+      }
+    }
+
     const candidates = []
 
     try {
@@ -750,6 +796,9 @@ class UnifiedClaudeScheduler {
     }
 
     const selected = weightedCandidates[(sequence - 1) % weightedCandidates.length]
+    if (sessionHash) {
+      await this._setSessionMapping(sessionHash, selected.accountId, selected.accountType)
+    }
     logger.info(
       `🎯 Selected bound account by weighted priority: ${selected.name || selected.accountId} (${selected.accountType}, priority ${selected.priority}) for API key ${apiKeyData.name || apiKeyData.id}`
     )
