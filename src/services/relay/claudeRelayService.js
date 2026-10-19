@@ -594,14 +594,18 @@ class ClaudeRelayService {
       // 生成会话哈希用于sticky会话
       const sessionHash = sessionHelper.generateSessionHash(requestBody)
 
-      // 选择可用的Claude账户（支持专属绑定和sticky会话）
+      // 选择可用的Claude账户（支持专属绑定和sticky会话）。
+      // API 路由可能已经完成过一次调度；此时必须复用该结果，不能再次
+      // 调度，否则双绑定 Claude/CCR API Key 可能在两次调度间切换账号。
       let accountSelection
       try {
-        accountSelection = await unifiedClaudeScheduler.selectAccountForApiKey(
-          apiKeyData,
-          sessionHash,
-          requestBody.model
-        )
+        accountSelection =
+          options?.accountSelection ||
+          (await unifiedClaudeScheduler.selectAccountForApiKey(
+            apiKeyData,
+            sessionHash,
+            requestBody.model
+          ))
       } catch (error) {
         if (error.code === 'CLAUDE_DEDICATED_RATE_LIMITED') {
           const limitMessage = this._buildStandardRateLimitMessage(error.rateLimitEndAt)
@@ -636,6 +640,20 @@ class ClaudeRelayService {
       }
       const { accountId } = accountSelection
       const { accountType } = accountSelection
+      if (accountType !== 'claude-official') {
+        const error = new Error(
+          `Claude official relay received a non-official account type: ${accountType || 'unknown'}`
+        )
+        error.code = 'CLAUDE_RELAY_ACCOUNT_TYPE_MISMATCH'
+        error.accountId = accountId
+        error.accountType = accountType
+        throw error
+      }
+      if (options?.accountSelection) {
+        logger.info(
+          `[Dispatch] relay reused accountId=${accountId}, accountType=${accountType} from route selection`
+        )
+      }
       selectedAccountId = accountId
 
       logger.info(
@@ -1995,14 +2013,18 @@ class ClaudeRelayService {
       // 生成会话哈希用于sticky会话
       const sessionHash = sessionHelper.generateSessionHash(requestBody)
 
-      // 选择可用的Claude账户（支持专属绑定和sticky会话）
+      // 选择可用的Claude账户（支持专属绑定和sticky会话）。
+      // API 路由可能已经完成过一次调度；复用该结果，避免双绑定
+      // Claude/CCR API Key 在 relay 内被再次调度到另一种账号类型。
       let accountSelection
       try {
-        accountSelection = await unifiedClaudeScheduler.selectAccountForApiKey(
-          apiKeyData,
-          sessionHash,
-          requestBody.model
-        )
+        accountSelection =
+          options?.accountSelection ||
+          (await unifiedClaudeScheduler.selectAccountForApiKey(
+            apiKeyData,
+            sessionHash,
+            requestBody.model
+          ))
       } catch (error) {
         if (error.code === 'CLAUDE_DEDICATED_RATE_LIMITED') {
           const limitMessage = this._buildStandardRateLimitMessage(error.rateLimitEndAt)
@@ -2040,6 +2062,20 @@ class ClaudeRelayService {
       }
       const { accountId } = accountSelection
       const { accountType } = accountSelection
+      if (accountType !== 'claude-official') {
+        const error = new Error(
+          `Claude official relay received a non-official account type: ${accountType || 'unknown'}`
+        )
+        error.code = 'CLAUDE_RELAY_ACCOUNT_TYPE_MISMATCH'
+        error.accountId = accountId
+        error.accountType = accountType
+        throw error
+      }
+      if (options?.accountSelection) {
+        logger.info(
+          `[Dispatch] relay reused accountId=${accountId}, accountType=${accountType} from route selection`
+        )
+      }
       selectedAccountId = accountId
 
       // 📬 用户消息队列处理：如果是用户消息请求，需要获取队列锁

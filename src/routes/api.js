@@ -351,6 +351,9 @@ async function handleMessagesRequest(req, res) {
           forcedAccount
         )
         ;({ accountId, accountType } = selection)
+        logger.info(
+          `[Dispatch] route selected accountId=${accountId}, accountType=${accountType}, apiKey=${req.apiKey?.name || req.apiKey?.id || 'unknown'}`
+        )
       } catch (error) {
         // 处理会话绑定账户不可用的错误
         if (error.code === 'SESSION_BINDING_ACCOUNT_UNAVAILABLE') {
@@ -570,7 +573,9 @@ async function handleMessagesRequest(req, res) {
                 JSON.stringify(usageData)
               )
             }
-          }
+          },
+          null,
+          { accountSelection: { accountId, accountType } }
         )
       } else if (accountType === 'claude-console') {
         // Claude Console账号使用Console转发服务（需要传递accountId）
@@ -1075,6 +1080,9 @@ async function handleMessagesRequest(req, res) {
           forcedAccountNonStream
         )
         ;({ accountId, accountType } = selection)
+        logger.info(
+          `[Dispatch] route selected accountId=${accountId}, accountType=${accountType}, apiKey=${req.apiKey?.name || req.apiKey?.id || 'unknown'}`
+        )
       } catch (error) {
         if (error.code === 'SESSION_BINDING_ACCOUNT_UNAVAILABLE') {
           const errorMessage = await claudeRelayConfigService.getSessionBindingErrorMessage()
@@ -1166,7 +1174,8 @@ async function handleMessagesRequest(req, res) {
           _apiKeyNonStream,
           req, // clientRequest 用于断开检测，保留但服务层已优化
           res,
-          _headersNonStream
+          _headersNonStream,
+          { accountSelection: { accountId, accountType } }
         )
       } else if (accountType === 'claude-console') {
         // Claude Console账号使用Console转发服务

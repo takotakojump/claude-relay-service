@@ -9,6 +9,7 @@ const logger = require('../utils/logger')
 const { authenticateApiKey } = require('../middleware/auth')
 const claudeRelayService = require('../services/relay/claudeRelayService')
 const claudeConsoleRelayService = require('../services/relay/claudeConsoleRelayService')
+const ccrRelayService = require('../services/relay/ccrRelayService')
 const openaiToClaude = require('../services/openaiToClaude')
 const apiKeyService = require('../services/apiKeyService')
 const unifiedClaudeScheduler = require('../services/scheduler/unifiedClaudeScheduler')
@@ -372,6 +373,16 @@ async function handleChatCompletion(req, res, apiKeyData) {
           accountId,
           streamTransformer
         )
+      } else if (accountType === 'ccr') {
+        await ccrRelayService.relayStreamRequestWithUsageCapture(
+          claudeRequest,
+          apiKeyData,
+          res,
+          claudeCodeHeaders,
+          usageCallback,
+          accountId,
+          streamTransformer
+        )
       } else {
         // Claude Official 账户使用标准转发服务
         await claudeRelayService.relayStreamRequestWithUsageCapture(
@@ -383,7 +394,8 @@ async function handleChatCompletion(req, res, apiKeyData) {
           streamTransformer,
           {
             betaHeader:
-              'oauth-2025-04-20,claude-code-20250219,interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14'
+              'oauth-2025-04-20,claude-code-20250219,interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14',
+            accountSelection: { accountId, accountType }
           }
         )
       }
@@ -403,6 +415,15 @@ async function handleChatCompletion(req, res, apiKeyData) {
           claudeCodeHeaders,
           accountId
         )
+      } else if (accountType === 'ccr') {
+        claudeResponse = await ccrRelayService.relayRequest(
+          claudeRequest,
+          apiKeyData,
+          req,
+          res,
+          claudeCodeHeaders,
+          accountId
+        )
       } else {
         // Claude Official 账户使用标准转发服务
         claudeResponse = await claudeRelayService.relayRequest(
@@ -411,7 +432,7 @@ async function handleChatCompletion(req, res, apiKeyData) {
           req,
           res,
           claudeCodeHeaders,
-          { betaHeader: 'oauth-2025-04-20' }
+          { betaHeader: 'oauth-2025-04-20', accountSelection: { accountId, accountType } }
         )
       }
 
