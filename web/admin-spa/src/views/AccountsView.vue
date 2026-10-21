@@ -5148,7 +5148,29 @@ const hasAnyClaudeUsage = (claudeUsage) => {
 }
 
 // CCR window data is a direct snapshot of the upstream rate-limit headers.
-const getCcrSessionWindows = (account) => account?.usage?.sessionWindow?.windows || []
+const getCcrSessionWindows = (account) => {
+  const windows = account?.usage?.sessionWindow?.windows
+  if (!Array.isArray(windows)) return []
+
+  // Do not keep rendering a cached upstream window after its reset time. The
+  // backend applies the same filter, but this also protects the UI when an old
+  // response is still present in the page state.
+  const nowSeconds = Date.now() / 1000
+  return windows.filter((window) => {
+    const rawReset = window?.reset
+    const numericReset = Number(rawReset)
+    const resetSeconds =
+      Number.isFinite(numericReset) && numericReset > 0
+        ? numericReset > 1e12
+          ? numericReset / 1000
+          : numericReset
+        : typeof rawReset === 'string' && rawReset.trim()
+          ? Date.parse(rawReset) / 1000
+          : null
+    if (!Number.isFinite(resetSeconds) || resetSeconds <= 0) return true
+    return resetSeconds > nowSeconds
+  })
+}
 
 const formatCcrWindowLabel = (key) => {
   if (key === '7d_oi') return '7d Opus'

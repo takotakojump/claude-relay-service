@@ -454,17 +454,21 @@ class UnifiedClaudeScheduler {
         // fallback 开关：默认回退共享池；关闭则不可用时直接抛错（强隔离）
         const allowCcrFallback = apiKeyData.ccrFallbackToPool !== false
         const boundCcrAccount = await ccrAccountService.getAccount(apiKeyData.ccrAccountId)
+        const boundCcrRateLimited = boundCcrAccount
+          ? await this.isAccountRateLimited(apiKeyData.ccrAccountId, 'ccr')
+          : false
         let unavailableReason = null
 
         if (
           !boundCcrAccount ||
           boundCcrAccount.isActive !== true ||
-          boundCcrAccount.status !== 'active'
+          (boundCcrAccount.status !== 'active' &&
+            !(boundCcrAccount.status === 'rate_limited' && !boundCcrRateLimited))
         ) {
           unavailableReason = `not available (isActive: ${boundCcrAccount?.isActive}, status: ${boundCcrAccount?.status})`
         } else if (await this.isAccountTemporarilyUnavailable(apiKeyData.ccrAccountId, 'ccr')) {
           unavailableReason = 'temporarily unavailable'
-        } else if (await this.isAccountRateLimited(apiKeyData.ccrAccountId, 'ccr')) {
+        } else if (boundCcrRateLimited) {
           // 限流：始终抛错（与 claude 专属账号一致），不受 fallback 开关影响
           const error = new Error('Dedicated CCR account is rate limited')
           error.code = 'CCR_DEDICATED_RATE_LIMITED'
@@ -641,15 +645,38 @@ class UnifiedClaudeScheduler {
 
     const candidates = []
 
+    const logExcludedBoundAccount = (accountType, accountId, account, reasons) => {
+      if (reasons.length === 0) {
+        return
+      }
+      logger.warn(
+        `⚖️ Excluded bound ${accountType} account from Claude/CCR balance: ${
+          account?.name || accountId || 'unknown'
+        } (${accountId || 'missing'}); reasons: ${reasons.join(', ')}`
+      )
+    }
+
     try {
       const claudeAccount = await redis.getClaudeAccount(apiKeyData.claudeAccountId)
-      if (
-        claudeAccount &&
-        (claudeAccount.isActive === true || claudeAccount.isActive === 'true') &&
-        !['error', 'blocked', 'temp_error'].includes(claudeAccount.status) &&
-        isSchedulable(claudeAccount.schedulable) &&
-        this._isModelSupportedByAccount(claudeAccount, 'claude-official', requestedModel)
-      ) {
+      const reasons = []
+      if (!claudeAccount) {
+        reasons.push('account_not_found')
+      } else {
+        if (!(claudeAccount.isActive === true || claudeAccount.isActive === 'true')) {
+          reasons.push(`inactive:${claudeAccount.isActive}`)
+        }
+        if (['error', 'blocked', 'temp_error'].includes(claudeAccount.status)) {
+          reasons.push(`status:${claudeAccount.status}`)
+        }
+        if (!isSchedulable(claudeAccount.schedulable)) {
+          reasons.push(`not_schedulable:${claudeAccount.schedulable}`)
+        }
+        if (!this._isModelSupportedByAccount(claudeAccount, 'claude-official', requestedModel)) {
+          reasons.push(`model_unsupported:${requestedModel}`)
+        }
+      }
+
+      if (reasons.length === 0) {
         const isTempUnavailable = await this.isAccountTemporarilyUnavailable(
           claudeAccount.id,
           'claude-official'
@@ -667,7 +694,17 @@ class UnifiedClaudeScheduler {
           )
         }
 
-        if (!isTempUnavailable && !isRateLimited && !isModelRateLimited) {
+        if (isTempUnavailable) {
+          reasons.push('temporarily_unavailable')
+        }
+        if (isRateLimited) {
+          reasons.push('rate_limited')
+        }
+        if (isModelRateLimited) {
+          reasons.push(`model_rate_limited:${requestedModelFamily}`)
+        }
+
+        if (reasons.length === 0) {
           candidates.push({
             accountId: claudeAccount.id,
             accountType: 'claude-official',
@@ -678,6 +715,8 @@ class UnifiedClaudeScheduler {
           })
         }
       }
+
+      logExcludedBoundAccount('Claude official', apiKeyData.claudeAccountId, claudeAccount, reasons)
     } catch (error) {
       logger.warn(
         `⚠️ Failed to evaluate bound Claude account ${apiKeyData.claudeAccountId}:`,
@@ -687,25 +726,56 @@ class UnifiedClaudeScheduler {
 
     try {
       const ccrAccount = await ccrAccountService.getAccount(apiKeyData.ccrAccountId)
-      if (
-        ccrAccount &&
-        (ccrAccount.isActive === true || ccrAccount.isActive === 'true') &&
-        ccrAccount.status === 'active' &&
-        isSchedulable(ccrAccount.schedulable) &&
-        this._isModelSupportedByAccount(ccrAccount, 'ccr', requestedModel)
-      ) {
+      const reasons = []
+      // Check the timestamped rate-limit record before trusting the persisted
+      // status. An expired CCR limit clears its timestamp lazily; checking the
+      // status first would leave a stale `rate_limited` account out of the pool
+      // forever when it receives no traffic after the reset.
+      const isRateLimited = ccrAccount
+        ? await this.isAccountRateLimited(ccrAccount.id, 'ccr')
+        : false
+      if (!ccrAccount) {
+        reasons.push('account_not_found')
+      } else {
+        if (!(ccrAccount.isActive === true || ccrAccount.isActive === 'true')) {
+          reasons.push(`inactive:${ccrAccount.isActive}`)
+        }
+        if (
+          ccrAccount.status !== 'active' &&
+          !(ccrAccount.status === 'rate_limited' && !isRateLimited)
+        ) {
+          reasons.push(`status:${ccrAccount.status}`)
+        }
+        if (!isSchedulable(ccrAccount.schedulable)) {
+          reasons.push(`not_schedulable:${ccrAccount.schedulable}`)
+        }
+        if (!this._isModelSupportedByAccount(ccrAccount, 'ccr', requestedModel)) {
+          reasons.push(`model_unsupported:${requestedModel}`)
+        }
+      }
+
+      if (reasons.length === 0) {
         const isTempUnavailable = await this.isAccountTemporarilyUnavailable(ccrAccount.id, 'ccr')
-        const isRateLimited = await this.isAccountRateLimited(ccrAccount.id, 'ccr')
         const isQuotaExceeded = await ccrAccountService.isAccountQuotaExceeded(ccrAccount.id)
         const isOverloaded = await ccrAccountService.isAccountOverloaded(ccrAccount.id)
         const isSubscriptionExpired = ccrAccountService.isSubscriptionExpired(ccrAccount)
-        if (
-          !isTempUnavailable &&
-          !isRateLimited &&
-          !isQuotaExceeded &&
-          !isOverloaded &&
-          !isSubscriptionExpired
-        ) {
+        if (isTempUnavailable) {
+          reasons.push('temporarily_unavailable')
+        }
+        if (isRateLimited) {
+          reasons.push('rate_limited')
+        }
+        if (isQuotaExceeded) {
+          reasons.push('quota_exceeded')
+        }
+        if (isOverloaded) {
+          reasons.push('overloaded')
+        }
+        if (isSubscriptionExpired) {
+          reasons.push('subscription_expired')
+        }
+
+        if (reasons.length === 0) {
           candidates.push({
             accountId: ccrAccount.id,
             accountType: 'ccr',
@@ -716,6 +786,8 @@ class UnifiedClaudeScheduler {
           })
         }
       }
+
+      logExcludedBoundAccount('CCR', apiKeyData.ccrAccountId, ccrAccount, reasons)
     } catch (error) {
       logger.warn(
         `⚠️ Failed to evaluate bound CCR account ${apiKeyData.ccrAccountId}:`,
@@ -1256,9 +1328,12 @@ class UnifiedClaudeScheduler {
           `🔍 Checking CCR account: ${account.name} - isActive: ${account.isActive}, status: ${account.status}, accountType: ${account.accountType}, schedulable: ${account.schedulable}`
         )
 
+        // Let the rate-limit checker clear an expired timestamp before the
+        // persisted status is used for pool eligibility.
+        const isRateLimited = await ccrAccountService.isAccountRateLimited(account.id)
         if (
           account.isActive === true &&
-          account.status === 'active' &&
+          (account.status === 'active' || (account.status === 'rate_limited' && !isRateLimited)) &&
           account.accountType === 'shared' &&
           isSchedulable(account.schedulable)
         ) {
@@ -1283,7 +1358,6 @@ class UnifiedClaudeScheduler {
           }
 
           // 检查是否被限流
-          const isRateLimited = await ccrAccountService.isAccountRateLimited(account.id)
           const isQuotaExceeded = await ccrAccountService.isAccountQuotaExceeded(account.id)
 
           if (!isRateLimited && !isQuotaExceeded) {
@@ -1496,11 +1570,16 @@ class UnifiedClaudeScheduler {
         if (!account || !account.isActive) {
           return false
         }
+        // A CCR rate-limit status is persisted separately from its timestamp.
+        // Let the checker clear an expired timestamp before rejecting the
+        // account based on the persisted status.
+        const isRateLimited = await this.isAccountRateLimited(accountId, 'ccr')
         // 检查账户状态
         if (
           account.status !== 'active' &&
           account.status !== 'unauthorized' &&
-          account.status !== 'overloaded'
+          account.status !== 'overloaded' &&
+          !(account.status === 'rate_limited' && !isRateLimited)
         ) {
           return false
         }
@@ -1534,7 +1613,7 @@ class UnifiedClaudeScheduler {
         }
 
         // 检查是否被限流
-        if (await ccrAccountService.isAccountRateLimited(accountId)) {
+        if (isRateLimited) {
           return false
         }
         if (await ccrAccountService.isAccountQuotaExceeded(accountId)) {
@@ -1921,11 +2000,16 @@ class UnifiedClaudeScheduler {
             ? account.isActive === 'true'
             : account.isActive === true
 
+        // Check the timestamp before evaluating the persisted status. CCR
+        // keeps `status=rate_limited` until this lazy check clears an expired
+        // limit; checking status first would make a recovered account stay out
+        // of a group forever when it receives no traffic after the reset.
+        const isRateLimited = await this.isAccountRateLimited(account.id, accountType)
         const status =
           accountType === 'claude-official'
             ? account.status !== 'error' && account.status !== 'blocked'
             : accountType === 'ccr'
-              ? account.status === 'active'
+              ? account.status === 'active' || (account.status === 'rate_limited' && !isRateLimited)
               : account.status === 'active'
 
         if (isActive && status && isSchedulable(account.schedulable)) {
@@ -1940,7 +2024,6 @@ class UnifiedClaudeScheduler {
           }
 
           // 检查是否被限流
-          const isRateLimited = await this.isAccountRateLimited(account.id, accountType)
           if (isRateLimited) {
             continue
           }

@@ -955,10 +955,28 @@ router.put(
 // 测试Claude OAuth账户连通性（流式响应）- 复用 claudeRelayService
 router.post('/claude-accounts/:accountId/test', authenticateAdmin, async (req, res) => {
   const { accountId } = req.params
+  const requestedModel = req.body?.model
+
+  if (
+    requestedModel !== undefined &&
+    (typeof requestedModel !== 'string' ||
+      requestedModel.trim().length === 0 ||
+      requestedModel.length > 256)
+  ) {
+    return res.status(400).json({
+      success: false,
+      error: 'Invalid model',
+      message: 'model must be a non-empty string (max 256 characters)'
+    })
+  }
 
   try {
     // 直接调用服务层的测试方法
-    await claudeRelayService.testAccountConnection(accountId, res)
+    await claudeRelayService.testAccountConnection(
+      accountId,
+      res,
+      requestedModel?.trim() || 'claude-sonnet-4-5-20250929'
+    )
   } catch (error) {
     logger.error(`❌ Failed to test Claude OAuth account:`, error)
     // 错误已在服务层处理，这里仅做日志记录
@@ -1108,6 +1126,20 @@ router.put('/claude-accounts/:accountId/test-config', authenticateAdmin, async (
 // 手动触发账户测试（非流式，返回JSON结果）
 router.post('/claude-accounts/:accountId/test-sync', authenticateAdmin, async (req, res) => {
   const { accountId } = req.params
+  const requestedModel = req.body?.model
+
+  if (
+    requestedModel !== undefined &&
+    (typeof requestedModel !== 'string' ||
+      requestedModel.trim().length === 0 ||
+      requestedModel.length > 256)
+  ) {
+    return res.status(400).json({
+      success: false,
+      error: 'Invalid model',
+      message: 'model must be a non-empty string (max 256 characters)'
+    })
+  }
 
   try {
     // 检查账户是否存在
@@ -1122,7 +1154,10 @@ router.post('/claude-accounts/:accountId/test-sync', authenticateAdmin, async (r
     logger.info(`🧪 Manual sync test triggered for Claude account: ${accountId}`)
 
     // 执行测试
-    const testResult = await claudeRelayService.testAccountConnectionSync(accountId)
+    const testResult = await claudeRelayService.testAccountConnectionSync(
+      accountId,
+      requestedModel?.trim() || 'claude-sonnet-4-5-20250929'
+    )
 
     // 保存测试结果到历史
     await redis.saveAccountTestResult(accountId, 'claude', testResult)

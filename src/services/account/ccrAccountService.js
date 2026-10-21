@@ -251,7 +251,40 @@ class CcrAccountService {
         return null
       }
       const snapshot = typeof raw === 'string' ? JSON.parse(raw) : raw
-      return snapshot && typeof snapshot === 'object' ? snapshot : null
+      if (!snapshot || typeof snapshot !== 'object') {
+        return null
+      }
+
+      // A CCR snapshot is only valid until the upstream window reset. Keep the
+      // last snapshot for audit/debugging, but do not expose expired windows as
+      // current quota data in the admin UI.
+      if (Array.isArray(snapshot.windows)) {
+        const nowSeconds = Math.floor(Date.now() / 1000)
+        const activeWindows = snapshot.windows.filter((window) => {
+          const rawReset = window?.reset
+          const numericReset = Number(rawReset)
+          const resetSeconds =
+            Number.isFinite(numericReset) && numericReset > 0
+              ? numericReset > 1e12
+                ? numericReset / 1000
+                : numericReset
+              : typeof rawReset === 'string' && rawReset.trim()
+                ? Date.parse(rawReset) / 1000
+                : null
+          if (!Number.isFinite(resetSeconds) || resetSeconds <= 0) {
+            return true
+          }
+          return resetSeconds > nowSeconds
+        })
+
+        return {
+          ...snapshot,
+          windows: activeWindows,
+          stale: activeWindows.length === 0 && snapshot.windows.length > 0
+        }
+      }
+
+      return snapshot
     } catch (error) {
       logger.warn(`⚠️ Failed to read CCR session window for ${accountId}:`, error.message)
       return null

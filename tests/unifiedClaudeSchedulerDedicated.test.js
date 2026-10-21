@@ -208,6 +208,48 @@ describe('dedicated (bound) Claude account never silently falls back to the shar
     ])
   })
 
+  it('keeps a bound CCR account eligible after a stale rate_limited status expires', async () => {
+    const ccrId = 'ccr-stale-rate-limit'
+    const apiKeyWithCcr = { ...apiKeyData, id: 'key-stale-rate-limit', ccrAccountId: ccrId }
+    redis.getClaudeAccount.mockResolvedValue({ ...healthyAccount, priority: 50 })
+    ccrAccountService.getAccount.mockResolvedValue({
+      id: ccrId,
+      name: 'CCR stale limit',
+      isActive: true,
+      status: 'rate_limited',
+      schedulable: true,
+      priority: 50,
+      supportedModels: []
+    })
+    ccrAccountService.isAccountRateLimited.mockResolvedValue(false)
+    const incr = jest.fn().mockResolvedValueOnce(1).mockResolvedValueOnce(2)
+    redis.getClientSafe.mockReturnValue({ incr })
+
+    await expect(
+      scheduler.selectAccountForApiKey(apiKeyWithCcr, null, 'claude-sonnet-4-5')
+    ).resolves.toEqual({ accountId: BOUND_ID, accountType: 'claude-official' })
+    await expect(
+      scheduler.selectAccountForApiKey(apiKeyWithCcr, null, 'claude-sonnet-4-5')
+    ).resolves.toEqual({ accountId: ccrId, accountType: 'ccr' })
+  })
+
+  it('keeps a stale rate_limited CCR sticky mapping available after the limit expires', async () => {
+    const ccrId = 'ccr-stale-sticky-limit'
+    ccrAccountService.getAccount.mockResolvedValue({
+      id: ccrId,
+      name: 'CCR stale sticky limit',
+      isActive: true,
+      status: 'rate_limited',
+      schedulable: true,
+      supportedModels: []
+    })
+    ccrAccountService.isAccountRateLimited.mockResolvedValue(false)
+
+    await expect(
+      scheduler._isAccountAvailable(ccrId, 'ccr', 'claude-sonnet-4-5')
+    ).resolves.toBe(true)
+  })
+
   it('round-robins bound accounts 1:1 when their priorities are equal', async () => {
     const ccrId = 'ccr-wuejyo'
     const apiKeyWithCcr = { ...apiKeyData, id: 'key-balanced-tie', ccrAccountId: ccrId }
