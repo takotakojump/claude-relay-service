@@ -761,6 +761,30 @@
           </div>
 
           <div v-else>
+            <div
+              class="mb-6 rounded-lg bg-white/80 p-6 shadow-lg backdrop-blur-sm dark:bg-gray-800/80"
+            >
+              <h2 class="text-lg font-semibold text-gray-800 dark:text-gray-200">
+                账户用量保留阈值
+              </h2>
+              <p class="mt-1 text-sm text-gray-600 dark:text-gray-400">
+                Claude OAuth 和 CCR
+                账户的任一有效用量窗口剩余达到此百分比时暂停调度；窗口重置后自动恢复。设为 0
+                可关闭。
+              </p>
+              <div class="mt-4 flex items-center gap-2">
+                <input
+                  v-model.number="claudeConfig.accountUsageReservePercent"
+                  class="w-28 rounded-lg border border-gray-300 bg-white px-3 py-2 dark:border-gray-500 dark:bg-gray-700 dark:text-white"
+                  max="100"
+                  min="0"
+                  step="0.1"
+                  type="number"
+                  @change="saveClaudeConfig"
+                />
+                <span class="text-sm text-gray-600 dark:text-gray-400">%</span>
+              </div>
+            </div>
             <!-- Claude Code 客户端限制 -->
             <div
               class="mb-6 rounded-lg bg-white/80 p-6 shadow-lg backdrop-blur-sm dark:bg-gray-800/80"
@@ -2119,6 +2143,7 @@ const webhookConfig = ref({
 const claudeConfigLoading = ref(false)
 const claudeConfig = ref({
   claudeCodeOnlyEnabled: false,
+  accountUsageReservePercent: 3,
   globalSessionBindingEnabled: false,
   sessionBindingErrorMessage: '你的本地session已污染，请清理后使用。',
   sessionBindingTtlDays: 1,
@@ -2519,6 +2544,7 @@ const loadClaudeConfig = async () => {
     if (response.success && isMounted.value) {
       claudeConfig.value = {
         claudeCodeOnlyEnabled: response.config?.claudeCodeOnlyEnabled ?? false,
+        accountUsageReservePercent: response.config?.accountUsageReservePercent ?? 3,
         globalSessionBindingEnabled: response.config?.globalSessionBindingEnabled ?? false,
         sessionBindingErrorMessage:
           response.config?.sessionBindingErrorMessage || '你的本地session已污染，请清理后使用。',
@@ -2565,6 +2591,7 @@ const saveClaudeConfig = async (options = {}) => {
 
     const payload = {
       claudeCodeOnlyEnabled: claudeConfig.value.claudeCodeOnlyEnabled,
+      accountUsageReservePercent: claudeConfig.value.accountUsageReservePercent,
       globalSessionBindingEnabled: claudeConfig.value.globalSessionBindingEnabled,
       sessionBindingErrorMessage: claudeConfig.value.sessionBindingErrorMessage,
       sessionBindingTtlDays: claudeConfig.value.sessionBindingTtlDays,

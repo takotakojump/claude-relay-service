@@ -19,6 +19,7 @@ const LRUCache = require('../../utils/lruCache')
 const { formatDateWithTimezone, getISOStringWithTimezone } = require('../../utils/dateHelper')
 const { isClaudeOAuthAccount } = require('../../utils/claudeAccountAuth')
 const { isOpus45OrNewer, RATE_LIMITED_MODEL_FAMILIES } = require('../../utils/modelHelper')
+const { parseRateLimitWindows } = require('../../utils/rateLimitHeaderHelper')
 const {
   parseBooleanLike,
   normalizeOptionalNonNegativeInteger,
@@ -2349,6 +2350,41 @@ class ClaudeAccountService {
         Object.keys(updates)
       )
     }
+  }
+
+  async updateClaudeRateLimitSnapshot(accountId, headers) {
+    const windows = parseRateLimitWindows(headers).filter(
+      (window) =>
+        window.utilization !== null &&
+        Number.isFinite(window.utilization) &&
+        window.reset !== null &&
+        Number.isFinite(window.reset)
+    )
+    if (windows.length === 0) {
+      return false
+    }
+
+    const client = redis.getClientSafe()
+    const key = `claude:account:${accountId}`
+    const observedAt = new Date().toISOString()
+    let previousWindows = []
+    try {
+      const previous = JSON.parse((await client.hget(key, 'claudeRateLimitWindows')) || 'null')
+      if (Array.isArray(previous?.windows)) {
+        previousWindows = previous.windows.filter(
+          (window) => window && Number(window.reset) * 1000 > Date.now()
+        )
+      }
+    } catch (_) {
+      // A malformed previous snapshot should not prevent fresh headers from being saved.
+    }
+    const merged = new Map(previousWindows.map((window) => [window.key, window]))
+    windows.forEach((window) => merged.set(window.key, { ...window, observedAt }))
+
+    await client.hset(key, {
+      claudeRateLimitWindows: JSON.stringify({ observedAt, windows: [...merged.values()] })
+    })
+    return true
   }
 
   async clearClaudeUsageSnapshot(accountId) {

@@ -13,6 +13,7 @@ const SESSION_BINDING_PREFIX = 'original_session_binding:'
 // 默认配置
 const DEFAULT_CONFIG = {
   claudeCodeOnlyEnabled: false,
+  accountUsageReservePercent: 3,
   globalSessionBindingEnabled: false,
   sessionBindingErrorMessage: '你的本地session已污染，请清理后使用。',
   sessionBindingTtlDays: 1, // 会话绑定 TTL（天），默认1天（支持 /clear 场景，避免 Redis 累积）

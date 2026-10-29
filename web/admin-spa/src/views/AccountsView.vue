@@ -230,7 +230,7 @@
 
       <!-- 桌面端表格视图 -->
       <div v-else class="table-wrapper hidden md:block">
-        <div ref="tableContainerRef" class="table-container">
+        <div class="table-container">
           <table class="w-full">
             <thead
               class="sticky top-0 z-10 bg-gradient-to-b from-gray-50 to-gray-100/90 backdrop-blur-sm dark:from-gray-700 dark:to-gray-800/90"
@@ -501,8 +501,7 @@
                   <i v-else class="fas fa-sort ml-1 text-gray-400" />
                 </th>
                 <th
-                  class="operations-column sticky right-0 z-20 px-3 py-4 text-left text-xs font-bold uppercase tracking-wider text-gray-700 dark:text-gray-300"
-                  :class="needsHorizontalScroll ? 'min-w-[170px]' : 'min-w-[200px]'"
+                  class="operations-column sticky right-0 z-20 min-w-[170px] px-3 py-4 text-left text-xs font-bold uppercase tracking-wider text-gray-700 dark:text-gray-300"
                 >
                   操作
                 </th>
@@ -1458,93 +1457,8 @@
                 <td
                   class="operations-column sticky right-0 z-10 whitespace-nowrap px-3 py-4 text-sm font-medium"
                 >
-                  <!-- 宽度足够时显示所有按钮 -->
-                  <div v-if="!needsHorizontalScroll" class="flex items-center gap-1">
-                    <button
-                      v-if="showResetButton(account)"
-                      :class="[
-                        'rounded px-2.5 py-1 text-xs font-medium transition-colors',
-                        account.isResetting
-                          ? 'cursor-not-allowed bg-gray-100 text-gray-400'
-                          : 'bg-yellow-100 text-yellow-700 hover:bg-yellow-200'
-                      ]"
-                      :disabled="account.isResetting"
-                      :title="account.isResetting ? '重置中...' : '重置所有异常状态'"
-                      @click="resetAccountStatus(account)"
-                    >
-                      <i :class="['fas fa-redo', account.isResetting ? 'animate-spin' : '']" />
-                      <span class="ml-1">重置状态</span>
-                    </button>
-                    <button
-                      :class="[
-                        'rounded px-2.5 py-1 text-xs font-medium transition-colors',
-                        account.isTogglingSchedulable
-                          ? 'cursor-not-allowed bg-gray-100 text-gray-400'
-                          : account.schedulable
-                            ? 'bg-green-100 text-green-700 hover:bg-green-200'
-                            : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-                      ]"
-                      :disabled="account.isTogglingSchedulable"
-                      :title="account.schedulable ? '点击禁用调度' : '点击启用调度'"
-                      @click="toggleSchedulable(account)"
-                    >
-                      <i :class="['fas', account.schedulable ? 'fa-toggle-on' : 'fa-toggle-off']" />
-                      <span class="ml-1">{{ account.schedulable ? '调度' : '停用' }}</span>
-                    </button>
-                    <button
-                      v-if="canViewUsage(account)"
-                      class="rounded bg-indigo-100 px-2.5 py-1 text-xs font-medium text-indigo-700 transition-colors hover:bg-indigo-200"
-                      title="查看使用详情"
-                      @click="openAccountUsageModal(account)"
-                    >
-                      <i class="fas fa-chart-line" />
-                      <span class="ml-1">详情</span>
-                    </button>
-                    <button
-                      class="rounded bg-red-100 px-2.5 py-1 text-xs font-medium text-red-700 transition-colors hover:bg-red-200 dark:bg-red-900/40 dark:text-red-300 dark:hover:bg-red-800/50"
-                      title="查看错误历史"
-                      @click="openErrorHistory(account)"
-                    >
-                      <i class="fas fa-exclamation-triangle" />
-                      <span class="ml-1">错误</span>
-                    </button>
-                    <button
-                      v-if="canTestAccount(account)"
-                      class="rounded bg-cyan-100 px-2.5 py-1 text-xs font-medium text-cyan-700 transition-colors hover:bg-cyan-200 dark:bg-cyan-900/40 dark:text-cyan-300 dark:hover:bg-cyan-800/50"
-                      title="测试账户连通性"
-                      @click="openAccountTestModal(account)"
-                    >
-                      <i class="fas fa-vial" />
-                      <span class="ml-1">测试</span>
-                    </button>
-                    <button
-                      v-if="canTestAccount(account)"
-                      class="rounded bg-amber-100 px-2.5 py-1 text-xs font-medium text-amber-700 transition-colors hover:bg-amber-200 dark:bg-amber-900/40 dark:text-amber-300 dark:hover:bg-amber-800/50"
-                      title="定时测试配置"
-                      @click="openScheduledTestModal(account)"
-                    >
-                      <i class="fas fa-clock" />
-                      <span class="ml-1">定时</span>
-                    </button>
-                    <button
-                      class="rounded bg-blue-100 px-2.5 py-1 text-xs font-medium text-blue-700 transition-colors hover:bg-blue-200"
-                      title="编辑账户"
-                      @click="editAccount(account)"
-                    >
-                      <i class="fas fa-edit" />
-                      <span class="ml-1">编辑</span>
-                    </button>
-                    <button
-                      class="rounded bg-red-100 px-2.5 py-1 text-xs font-medium text-red-700 transition-colors hover:bg-red-200"
-                      title="删除账户"
-                      @click="deleteAccount(account)"
-                    >
-                      <i class="fas fa-trash" />
-                      <span class="ml-1">删除</span>
-                    </button>
-                  </div>
-                  <!-- 需要横向滚动时使用缩减形式：2个快捷按钮 + 下拉菜单 -->
-                  <div v-else class="flex items-center gap-1">
+                  <!-- 固定为快捷按钮 + 更多菜单，避免表格宽度变化导致布局来回切换 -->
+                  <div class="flex items-center justify-end gap-1">
                     <button
                       :class="[
                         'rounded px-2.5 py-1 text-xs font-medium transition-colors',
@@ -2102,7 +2016,7 @@
           </div>
 
           <!-- 操作按钮 -->
-          <div class="mt-3 flex gap-2 border-t border-gray-100 pt-3">
+          <div class="mt-3 grid grid-cols-2 gap-2 border-t border-gray-100 pt-3">
             <button
               v-if="showResetButton(account)"
               class="flex flex-1 items-center justify-center gap-1 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-700 transition-colors hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-60 dark:bg-amber-900/40 dark:text-amber-300 dark:hover:bg-amber-800/50"
@@ -2128,11 +2042,18 @@
 
             <button
               v-if="canViewUsage(account)"
-              class="flex flex-1 items-center justify-center gap-1 rounded-lg bg-indigo-50 px-3 py-2 text-xs text-indigo-600 transition-colors hover:bg-indigo-100"
+              class="flex items-center justify-center gap-1 rounded-lg bg-indigo-50 px-3 py-2 text-xs text-indigo-600 transition-colors hover:bg-indigo-100"
               @click="openAccountUsageModal(account)"
             >
               <i class="fas fa-chart-line" />
               详情
+            </button>
+            <button
+              class="flex items-center justify-center gap-1 rounded-lg bg-purple-50 px-3 py-2 text-xs text-purple-600 transition-colors hover:bg-purple-100 dark:bg-purple-900/40 dark:text-purple-300 dark:hover:bg-purple-800/50"
+              @click="openAccountUsageTimeline(account)"
+            >
+              <i class="fas fa-clock" />
+              时间线
             </button>
             <button
               class="flex flex-1 items-center justify-center gap-1 rounded-lg bg-red-50 px-3 py-2 text-xs text-red-600 transition-colors hover:bg-red-100 dark:bg-red-900/40 dark:text-red-300 dark:hover:bg-red-800/50"
@@ -2507,7 +2428,8 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
+import { useRouter } from 'vue-router'
 import { showToast, copyText, formatNumber, formatRelativeTime } from '@/utils/tools'
 
 import * as httpApis from '@/utils/http_apis'
@@ -2536,6 +2458,8 @@ import ActionDropdown from '@/components/common/ActionDropdown.vue'
 import GroupManagementModal from '@/components/accounts/GroupManagementModal.vue'
 import BalanceDisplay from '@/components/accounts/BalanceDisplay.vue'
 import AccountBalanceScriptModal from '@/components/accounts/AccountBalanceScriptModal.vue'
+
+const router = useRouter()
 
 // 确认弹窗状态
 const showConfirmModal = ref(false)
@@ -2663,7 +2587,8 @@ const supportedUsagePlatforms = [
   'droid',
   'grok',
   'gemini-api',
-  'bedrock'
+  'bedrock',
+  'ccr'
 ]
 
 // 过期时间编辑弹窗状态
@@ -2683,10 +2608,6 @@ const showAccountStatsModal = ref(false)
 
 // 分组管理弹窗状态
 const showGroupManagementModal = ref(false)
-
-// 表格横向滚动检测
-const tableContainerRef = ref(null)
-const needsHorizontalScroll = ref(false)
 
 // 缓存状态标志
 const apiKeysLoaded = ref(false) // 用于其他功能
@@ -2944,6 +2865,15 @@ const getAccountActions = (account) => {
     })
   }
 
+  // 请求时间线作为操作菜单一级项目，不再放在详情弹窗内
+  actions.push({
+    key: 'usage-timeline',
+    label: '请求时间线',
+    icon: 'fa-clock',
+    color: 'purple',
+    handler: () => openAccountUsageTimeline(account)
+  })
+
   // 错误历史
   actions.push({
     key: 'error-history',
@@ -2981,6 +2911,14 @@ const getAccountActions = (account) => {
   })
 
   return actions
+}
+
+const openAccountUsageTimeline = (account) => {
+  if (!account?.id) return
+  router.push({
+    path: `/accounts/${account.id}/usage-records`,
+    query: { platform: account.platform || account.accountType }
+  })
 }
 
 const openAccountUsageModal = async (account) => {
@@ -5466,10 +5404,6 @@ watch(currentPage, () => {
 
 watch(paginatedAccounts, () => {
   updateSelectAllState()
-  // 数据变化后重新检测是否需要横向滚动
-  nextTick(() => {
-    checkHorizontalScroll()
-  })
 })
 
 watch(accounts, () => {
@@ -5577,16 +5511,6 @@ const handleSaveAccountExpiry = async ({ accountId, expiresAt }) => {
   }
 }
 
-// 检测表格是否需要横向滚动
-const checkHorizontalScroll = () => {
-  if (tableContainerRef.value) {
-    needsHorizontalScroll.value =
-      tableContainerRef.value.scrollWidth > tableContainerRef.value.clientWidth
-  }
-}
-
-// 窗口大小变化时重新检测
-let resizeObserver = null
 let tempUnavailableCountdownTimer = null
 
 onMounted(() => {
@@ -5597,31 +5521,13 @@ onMounted(() => {
   tempUnavailableCountdownTimer = setInterval(() => {
     tempUnavailableNowTs.value = Date.now()
   }, 1000)
-
-  // 设置ResizeObserver监听表格容器大小变化
-  nextTick(() => {
-    if (tableContainerRef.value) {
-      resizeObserver = new ResizeObserver(() => {
-        checkHorizontalScroll()
-      })
-      resizeObserver.observe(tableContainerRef.value)
-      checkHorizontalScroll()
-    }
-  })
-
-  // 监听窗口大小变化
-  window.addEventListener('resize', checkHorizontalScroll)
 })
 
 onUnmounted(() => {
-  if (resizeObserver) {
-    resizeObserver.disconnect()
-  }
   if (tempUnavailableCountdownTimer) {
     clearInterval(tempUnavailableCountdownTimer)
     tempUnavailableCountdownTimer = null
   }
-  window.removeEventListener('resize', checkHorizontalScroll)
 })
 </script>
 

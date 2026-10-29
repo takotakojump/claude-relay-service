@@ -27,7 +27,7 @@
         <div
           v-if="isOpen"
           ref="dropdownRef"
-          class="fixed z-[9999] min-w-[140px] overflow-hidden rounded-lg border border-gray-200 bg-white py-1 shadow-lg dark:border-gray-600 dark:bg-gray-800"
+          class="fixed z-[9999] max-h-[min(70vh,360px)] min-w-[140px] overflow-y-auto overflow-x-hidden rounded-lg border border-gray-200 bg-white py-1 shadow-lg dark:border-gray-600 dark:bg-gray-800"
           :style="dropdownStyle"
         >
           <button
@@ -115,35 +115,29 @@ const updateDropdownPosition = () => {
   if (!triggerRef.value || !isOpen.value) return
 
   const trigger = triggerRef.value.getBoundingClientRect()
-  const dropdownHeight = 200 // 预估高度
-  const dropdownWidth = 180 // 预估宽度，略大以减少遮挡
+  // 菜单已经 Teleport 到 body，直接使用实际渲染尺寸，避免固定高度导致上下重叠或被裁剪。
+  const dropdownHeight = dropdownRef.value?.offsetHeight || 200
+  const dropdownWidth = dropdownRef.value?.offsetWidth || 180
   const gap = 8
-  const spaceBelow = window.innerHeight - trigger.bottom
-  const spaceAbove = trigger.top
-  const spaceRight = window.innerWidth - trigger.right
-  const spaceLeft = trigger.left
+  const viewportPadding = 8
+  const spaceBelow = window.innerHeight - trigger.bottom - viewportPadding
+  const spaceAbove = trigger.top - viewportPadding
 
-  let top, left
+  let top =
+    spaceBelow >= dropdownHeight || spaceBelow >= spaceAbove
+      ? trigger.bottom + gap
+      : trigger.top - dropdownHeight - gap
+  let left = trigger.right - dropdownWidth
 
-  // 计算垂直位置
-  if (spaceBelow >= dropdownHeight || spaceBelow >= spaceAbove) {
-    top = trigger.bottom + gap
-  } else {
-    top = trigger.top - dropdownHeight - gap
-  }
-
-  // 计算水平位置 - 优先向右展开，避免遮挡左侧内容
-  if (spaceRight >= dropdownWidth + gap) {
-    left = trigger.right + gap
-  } else if (spaceLeft >= dropdownWidth + gap) {
-    left = trigger.left - dropdownWidth - gap + trigger.width
-  } else {
-    left = window.innerWidth - dropdownWidth - 10
-  }
-
-  // 确保不超出边界
-  if (left < 10) left = 10
-  if (top < 10) top = 10
+  // 将菜单限制在视口内，同时保持与触发按钮右边对齐。
+  top = Math.max(
+    viewportPadding,
+    Math.min(top, window.innerHeight - dropdownHeight - viewportPadding)
+  )
+  left = Math.max(
+    viewportPadding,
+    Math.min(left, window.innerWidth - dropdownWidth - viewportPadding)
+  )
 
   dropdownStyle.value = {
     top: `${top}px`,

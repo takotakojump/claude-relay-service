@@ -46,12 +46,6 @@
           </div>
           <div class="flex items-center gap-2">
             <button
-              class="flex items-center gap-2 rounded-full bg-purple-100 px-3 py-2 text-xs font-semibold text-purple-700 transition hover:bg-purple-200 dark:bg-purple-500/10 dark:text-purple-200 dark:hover:bg-purple-500/20"
-              @click="goTimeline"
-            >
-              <i class="fas fa-clock" /> 请求时间线
-            </button>
-            <button
               class="flex h-10 w-10 items-center justify-center rounded-full bg-gray-100 text-gray-500 transition hover:bg-gray-200 hover:text-gray-700 dark:bg-gray-800 dark:text-gray-400 dark:hover:bg-gray-700 dark:hover:text-gray-200"
               @click="handleClose"
             >
@@ -66,6 +60,29 @@
             <div class="loading-spinner h-12 w-12 border-4 border-blue-500" />
           </div>
           <template v-else>
+            <div
+              v-if="account?.platform === 'ccr'"
+              class="mb-5 rounded-2xl border border-teal-100 bg-white/80 p-4 shadow-sm dark:border-teal-900/60 dark:bg-gray-900/70"
+            >
+              <h4 class="mb-3 text-sm font-semibold text-gray-800 dark:text-gray-100">
+                CCR 上游会话窗口
+              </h4>
+              <div v-if="ccrSessionWindows.length" class="space-y-2">
+                <div
+                  v-for="window in ccrSessionWindows"
+                  :key="window.key"
+                  class="flex items-center justify-between gap-3 text-sm"
+                >
+                  <span class="text-gray-600 dark:text-gray-300">{{ window.label }}</span>
+                  <span class="font-semibold text-teal-700 dark:text-teal-300">
+                    {{ window.utilization }}
+                  </span>
+                </div>
+              </div>
+              <p v-else class="text-xs text-gray-500 dark:text-gray-400">
+                等待 CCR 上游返回窗口数据
+              </p>
+            </div>
             <div
               v-if="account?.grokUsage"
               class="mb-5 rounded-2xl border border-zinc-100 bg-white/80 p-4 shadow-sm dark:border-gray-700 dark:bg-gray-900/70"
@@ -100,7 +117,7 @@
               <p
                 class="mb-3 text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400"
               >
-                滚动用量
+                {{ account?.platform === 'ccr' ? 'CRS 本地滚动用量' : '滚动用量' }}
               </p>
               <div class="space-y-2">
                 <div
@@ -396,7 +413,6 @@
 
 <script setup>
 import { computed, nextTick, onUnmounted, ref, watch } from 'vue'
-import { useRouter } from 'vue-router'
 import { storeToRefs } from 'pinia'
 import Chart from 'chart.js/auto'
 import { useThemeStore } from '@/stores/theme'
@@ -417,14 +433,13 @@ const emit = defineEmits(['close'])
 
 const themeStore = useThemeStore()
 const { isDarkMode } = storeToRefs(themeStore)
-const router = useRouter()
-
 const chartCanvas = ref(null)
 let chartInstance = null
 
 const platformLabelMap = {
   claude: 'Claude',
   'claude-console': 'Claude Console',
+  ccr: 'Claude Console Relay',
   openai: 'OpenAI',
   'openai-responses': 'OpenAI Responses',
   gemini: 'Gemini',
@@ -435,6 +450,35 @@ const platformLabelMap = {
 }
 
 const platformLabel = computed(() => platformLabelMap[props.account?.platform] || '未知平台')
+
+const ccrSessionWindows = computed(() => {
+  const windows = props.account?.usage?.sessionWindow?.windows
+  if (!Array.isArray(windows)) return []
+  const nowSeconds = Date.now() / 1000
+  return windows.flatMap((window) => {
+    if (!window || typeof window !== 'object') return []
+    const rawReset = window?.reset
+    const numericReset = Number(rawReset)
+    const resetSeconds =
+      Number.isFinite(numericReset) && numericReset > 0
+        ? numericReset > 1e12
+          ? numericReset / 1000
+          : numericReset
+        : typeof rawReset === 'string' && rawReset.trim()
+          ? Date.parse(rawReset) / 1000
+          : null
+    if (Number.isFinite(resetSeconds) && resetSeconds > 0 && resetSeconds <= nowSeconds) {
+      return []
+    }
+    const rawUtilization = window.utilization
+    const utilizationValue = rawUtilization == null ? NaN : Number(rawUtilization)
+    const utilization = Number.isFinite(utilizationValue)
+      ? `${Math.max(0, Math.min(100, utilizationValue <= 1 ? utilizationValue * 100 : utilizationValue)).toFixed(1)}%`
+      : '-'
+    const label = { '5h': '5h', '7d': '7d', '7d_oi': '7d Opus' }[window.key] || window.key || '窗口'
+    return [{ key: window.key, label, utilization }]
+  })
+})
 
 const accountTypeLabel = computed(() => {
   if (!props.account?.accountType) return '共享'
@@ -697,14 +741,6 @@ const cleanupChart = () => {
 const handleClose = () => {
   cleanupChart()
   emit('close')
-}
-
-const goTimeline = () => {
-  if (!props.account?.id) return
-  router.push({
-    path: `/accounts/${props.account.id}/usage-records`,
-    query: { platform: props.account.platform || props.account.accountType }
-  })
 }
 
 watch(

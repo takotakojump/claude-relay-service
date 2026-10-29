@@ -848,6 +848,12 @@ class ClaudeRelayService {
         ;({ response, retryCount } = await makeRequestWithRetries(requestOptions))
       }
 
+      try {
+        await claudeAccountService.updateClaudeRateLimitSnapshot(accountId, response.headers)
+      } catch (error) {
+        logger.warn(`Failed to save Claude rate limit windows for ${accountId}: ${error.message}`)
+      }
+
       // 如果进行了重试，记录最终结果
       if (retryCount > 0) {
         if (response.statusCode === 403) {
@@ -2338,6 +2344,12 @@ class ClaudeRelayService {
 
       const req = https.request(options, async (res) => {
         logger.debug(`🌊 Claude stream response status: ${res.statusCode}`)
+
+        try {
+          await claudeAccountService.updateClaudeRateLimitSnapshot(accountId, res.headers)
+        } catch (error) {
+          logger.warn(`Failed to save Claude rate limit windows for ${accountId}: ${error.message}`)
+        }
 
         // 错误响应处理
         this._setClaudeStreamQuotaHeaders(responseStream, res.headers)

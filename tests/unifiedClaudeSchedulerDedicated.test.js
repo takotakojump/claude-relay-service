@@ -21,6 +21,7 @@ jest.mock('../src/services/account/claudeConsoleAccountService', () => ({}))
 jest.mock('../src/services/account/bedrockAccountService', () => ({}))
 jest.mock('../src/services/account/ccrAccountService', () => ({
   getAccount: jest.fn(),
+  getSessionWindowSnapshot: jest.fn(),
   isAccountRateLimited: jest.fn(),
   isAccountQuotaExceeded: jest.fn(),
   isAccountOverloaded: jest.fn(),
@@ -46,6 +47,9 @@ jest.mock('../src/utils/commonHelper', () => ({
   )
 }))
 jest.mock('../src/utils/upstreamErrorHelper', () => ({}))
+jest.mock('../src/services/claudeRelayConfigService', () => ({
+  getConfig: jest.fn().mockResolvedValue({ accountUsageReservePercent: 3 })
+}))
 
 const claudeAccountService = require('../src/services/account/claudeAccountService')
 const ccrAccountService = require('../src/services/account/ccrAccountService')
@@ -66,6 +70,7 @@ const healthyAccount = {
 
 describe('dedicated (bound) Claude account never silently falls back to the shared pool', () => {
   let tempSpy
+  let pauseClient
 
   beforeEach(() => {
     jest.clearAllMocks()
@@ -79,11 +84,17 @@ describe('dedicated (bound) Claude account never silently falls back to the shar
     })
     claudeAccountService.getAccountModelRateLimitInfo.mockResolvedValue({ resetAt: null })
     ccrAccountService.getAccount.mockResolvedValue(null)
+    ccrAccountService.getSessionWindowSnapshot.mockResolvedValue(null)
     ccrAccountService.isAccountRateLimited.mockResolvedValue(false)
     ccrAccountService.isAccountQuotaExceeded.mockResolvedValue(false)
     ccrAccountService.isAccountOverloaded.mockResolvedValue(false)
     ccrAccountService.isSubscriptionExpired.mockReturnValue(false)
-    redis.getClientSafe.mockReturnValue({ incr: jest.fn().mockResolvedValue(1) })
+    const pauses = new Map()
+    pauseClient = {
+      get: jest.fn(async (key) => pauses.get(key) || null),
+      set: jest.fn(async (key, value) => pauses.set(key, value))
+    }
+    redis.getClientSafe.mockReturnValue({ ...pauseClient, incr: jest.fn().mockResolvedValue(1) })
     tempSpy = jest.spyOn(scheduler, 'isAccountTemporarilyUnavailable').mockResolvedValue(false)
   })
 
@@ -189,7 +200,7 @@ describe('dedicated (bound) Claude account never silently falls back to the shar
     for (let value = 1; value <= 6; value += 1) {
       incr.mockResolvedValueOnce(value)
     }
-    redis.getClientSafe.mockReturnValue({ incr })
+    redis.getClientSafe.mockReturnValue({ ...pauseClient, incr })
 
     const selections = []
     for (let i = 0; i < 6; i += 1) {
@@ -223,7 +234,7 @@ describe('dedicated (bound) Claude account never silently falls back to the shar
     })
     ccrAccountService.isAccountRateLimited.mockResolvedValue(false)
     const incr = jest.fn().mockResolvedValueOnce(1).mockResolvedValueOnce(2)
-    redis.getClientSafe.mockReturnValue({ incr })
+    redis.getClientSafe.mockReturnValue({ ...pauseClient, incr })
 
     await expect(
       scheduler.selectAccountForApiKey(apiKeyWithCcr, null, 'claude-sonnet-4-5')
@@ -245,9 +256,9 @@ describe('dedicated (bound) Claude account never silently falls back to the shar
     })
     ccrAccountService.isAccountRateLimited.mockResolvedValue(false)
 
-    await expect(
-      scheduler._isAccountAvailable(ccrId, 'ccr', 'claude-sonnet-4-5')
-    ).resolves.toBe(true)
+    await expect(scheduler._isAccountAvailable(ccrId, 'ccr', 'claude-sonnet-4-5')).resolves.toBe(
+      true
+    )
   })
 
   it('round-robins bound accounts 1:1 when their priorities are equal', async () => {
@@ -269,7 +280,7 @@ describe('dedicated (bound) Claude account never silently falls back to the shar
       supportedModels: []
     })
     const incr = jest.fn().mockResolvedValueOnce(1).mockResolvedValueOnce(2)
-    redis.getClientSafe.mockReturnValue({ incr })
+    redis.getClientSafe.mockReturnValue({ ...pauseClient, incr })
 
     await expect(
       scheduler.selectAccountForApiKey(apiKeyWithCcr, null, 'claude-sonnet-4-5')
@@ -298,6 +309,7 @@ describe('dedicated (bound) Claude account never silently falls back to the shar
     redis.getClientSafe.mockReturnValue({
       incr,
       get: jest.fn(async (key) => mappings.get(key) || null),
+      set: pauseClient.set,
       setex: jest.fn(async (key, _ttl, value) => mappings.set(key, value)),
       ttl: jest.fn().mockResolvedValue(3600)
     })
@@ -328,23 +340,19 @@ describe('dedicated (bound) Claude account never silently falls back to the shar
       supportedModels: []
     })
     const incr = jest.fn().mockResolvedValueOnce(1).mockResolvedValueOnce(2)
-    redis.getClientSafe.mockReturnValue({ incr })
+    redis.getClientSafe.mockReturnValue({ ...pauseClient, incr })
 
     await expect(
-      scheduler.selectAccountForApiKey(
-        apiKeyWithCcr,
-        null,
-        'claude-sonnet-4-5',
-        { accountId: BOUND_ID, accountType: 'claude-official' }
-      )
+      scheduler.selectAccountForApiKey(apiKeyWithCcr, null, 'claude-sonnet-4-5', {
+        accountId: BOUND_ID,
+        accountType: 'claude-official'
+      })
     ).resolves.toEqual({ accountId: BOUND_ID, accountType: 'claude-official' })
     await expect(
-      scheduler.selectAccountForApiKey(
-        apiKeyWithCcr,
-        null,
-        'claude-sonnet-4-5',
-        { accountId: BOUND_ID, accountType: 'claude-official' }
-      )
+      scheduler.selectAccountForApiKey(apiKeyWithCcr, null, 'claude-sonnet-4-5', {
+        accountId: BOUND_ID,
+        accountType: 'claude-official'
+      })
     ).resolves.toEqual({ accountId: ccrId, accountType: 'ccr' })
   })
 
@@ -364,5 +372,65 @@ describe('dedicated (bound) Claude account never silently falls back to the shar
     await expect(
       scheduler.selectAccountForApiKey(apiKeyWithCcr, null, 'claude-sonnet-4-5')
     ).resolves.toEqual({ accountId: ccrId, accountType: 'ccr' })
+  })
+
+  it('pauses a dedicated Claude account when its five hour reserve is reached', async () => {
+    redis.getClaudeAccount.mockResolvedValue({
+      ...healthyAccount,
+      claudeFiveHourUtilization: '97',
+      claudeFiveHourResetsAt: new Date(Date.now() + 3600000).toISOString()
+    })
+
+    await expect(
+      scheduler.selectAccountForApiKey(apiKeyData, null, 'claude-sonnet-4-5')
+    ).rejects.toMatchObject({
+      code: 'CLAUDE_DEDICATED_UNAVAILABLE',
+      reason: 'usage_reserve'
+    })
+  })
+
+  it('keeps the account paused after an older low-usage response overwrites the snapshot', async () => {
+    redis.getClaudeAccount.mockResolvedValueOnce({
+      ...healthyAccount,
+      claudeFiveHourUtilization: '98',
+      claudeFiveHourResetsAt: new Date(Date.now() + 3600000).toISOString()
+    })
+    redis.getClaudeAccount.mockResolvedValue({
+      ...healthyAccount,
+      claudeFiveHourUtilization: '50',
+      claudeFiveHourResetsAt: new Date(Date.now() + 3600000).toISOString()
+    })
+
+    await expect(
+      scheduler.selectAccountForApiKey(apiKeyData, null, 'claude-sonnet-4-5')
+    ).rejects.toMatchObject({ reason: 'usage_reserve' })
+    await expect(
+      scheduler.selectAccountForApiKey(apiKeyData, null, 'claude-sonnet-4-5')
+    ).rejects.toMatchObject({ reason: 'usage_reserve' })
+    expect(pauseClient.set).toHaveBeenCalledTimes(1)
+  })
+
+  it('excludes a CCR account at its weekly reserve from dual-bound balancing', async () => {
+    const ccrId = 'ccr-near-limit'
+    redis.getClaudeAccount.mockResolvedValue(healthyAccount)
+    ccrAccountService.getAccount.mockResolvedValue({
+      id: ccrId,
+      name: 'CCR near limit',
+      isActive: true,
+      status: 'active',
+      schedulable: true,
+      supportedModels: [],
+      sessionWindow: {
+        windows: [{ key: '7d', utilization: 0.98, reset: Math.floor(Date.now() / 1000) + 3600 }]
+      }
+    })
+
+    await expect(
+      scheduler.selectAccountForApiKey(
+        { ...apiKeyData, ccrAccountId: ccrId },
+        null,
+        'claude-sonnet-4-5'
+      )
+    ).resolves.toEqual({ accountId: BOUND_ID, accountType: 'claude-official' })
   })
 })

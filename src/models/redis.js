@@ -2565,7 +2565,9 @@ class RedisClient {
 
     // 获取账户创建时间来计算平均值 - 支持不同类型的账号
     let accountData = {}
-    if (accountType === 'droid') {
+    if (accountType === 'ccr') {
+      accountData = await this.client.hgetall(`ccr_account:${accountId}`)
+    } else if (accountType === 'droid') {
       accountData = await this.client.hgetall(`droid:account:${accountId}`)
     } else if (accountType === 'openai') {
       accountData = await this.client.hgetall(`openai:account:${accountId}`)

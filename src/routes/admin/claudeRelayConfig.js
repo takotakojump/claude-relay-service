@@ -39,6 +39,7 @@ router.put('/claude-relay-config', authenticateAdmin, async (req, res) => {
   try {
     const {
       claudeCodeOnlyEnabled,
+      accountUsageReservePercent,
       globalSessionBindingEnabled,
       sessionBindingErrorMessage,
       sessionBindingTtlDays,
@@ -58,6 +59,16 @@ router.put('/claude-relay-config', authenticateAdmin, async (req, res) => {
     // 验证输入
     if (claudeCodeOnlyEnabled !== undefined && typeof claudeCodeOnlyEnabled !== 'boolean') {
       return res.status(400).json({ error: 'claudeCodeOnlyEnabled must be a boolean' })
+    }
+
+    if (
+      accountUsageReservePercent !== undefined &&
+      (typeof accountUsageReservePercent !== 'number' ||
+        !Number.isFinite(accountUsageReservePercent) ||
+        accountUsageReservePercent < 0 ||
+        accountUsageReservePercent > 100)
+    ) {
+      return res.status(400).json({ error: 'accountUsageReservePercent must be between 0 and 100' })
     }
 
     if (
@@ -202,6 +213,9 @@ router.put('/claude-relay-config', authenticateAdmin, async (req, res) => {
     }
 
     const updateData = {}
+    if (accountUsageReservePercent !== undefined) {
+      updateData.accountUsageReservePercent = accountUsageReservePercent
+    }
     if (claudeCodeOnlyEnabled !== undefined) {
       updateData.claudeCodeOnlyEnabled = claudeCodeOnlyEnabled
     }
