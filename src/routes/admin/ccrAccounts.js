@@ -1,5 +1,6 @@
 const express = require('express')
 const ccrAccountService = require('../../services/account/ccrAccountService')
+const accountUsageReserveService = require('../../services/accountUsageReserveService')
 const accountGroupService = require('../../services/accountGroupService')
 const apiKeyService = require('../../services/apiKeyService')
 const redis = require('../../models/redis')
@@ -111,7 +112,16 @@ router.get('/', authenticateAdmin, async (req, res) => {
       })
     )
 
-    return res.json({ success: true, data: accountsWithStats })
+    const accountsWithReserve = await Promise.all(
+      accountsWithStats.map(async (account) => ({
+        ...account,
+        usageReserve: await accountUsageReserveService.getState(
+          { ...account, sessionWindow: account.usage?.sessionWindow },
+          'ccr'
+        )
+      }))
+    )
+    return res.json({ success: true, data: accountsWithReserve })
   } catch (error) {
     logger.error('❌ Failed to get CCR accounts:', error)
     return res.status(500).json({ error: 'Failed to get CCR accounts', message: error.message })
@@ -322,6 +332,53 @@ router.put('/:accountId/toggle', authenticateAdmin, async (req, res) => {
     return res
       .status(500)
       .json({ error: 'Failed to toggle account status', message: error.message })
+  }
+})
+
+// 读取 CCR 账户的用量保留状态
+router.get('/:accountId/usage-reserve', authenticateAdmin, async (req, res) => {
+  try {
+    const account = await ccrAccountService.getAccount(req.params.accountId)
+    if (!account) {
+      return res.status(404).json({ error: 'Account not found' })
+    }
+    const usageReserve = await accountUsageReserveService.getState(account, 'ccr')
+    return res.json({ success: true, usageReserve })
+  } catch (error) {
+    logger.error('Failed to read CCR usage reserve state:', error)
+    return res.status(500).json({ error: 'Failed to read usage reserve state' })
+  }
+})
+
+// 设置 CCR 账户的临时调度状态
+router.put('/:accountId/toggle-usage-reserve', authenticateAdmin, async (req, res) => {
+  try {
+    const { temporaryScheduling, expectedVersion } = req.body || {}
+    if (
+      typeof temporaryScheduling !== 'boolean' ||
+      (temporaryScheduling && typeof expectedVersion !== 'string')
+    ) {
+      return res.status(400).json({ error: 'Invalid usage reserve request' })
+    }
+    const account = await ccrAccountService.getAccount(req.params.accountId)
+    if (!account) {
+      return res.status(404).json({ error: 'Account not found' })
+    }
+    const state = await accountUsageReserveService.setTemporaryScheduling(
+      account,
+      'ccr',
+      temporaryScheduling,
+      expectedVersion
+    )
+    return res.json({ success: true, usageReserve: state })
+  } catch (error) {
+    if (error.code === 'USAGE_RESERVE_STATE_CHANGED') {
+      return res
+        .status(409)
+        .json({ success: false, message: error.message, usageReserve: error.state })
+    }
+    logger.error('Failed to toggle CCR usage reserve override:', error)
+    return res.status(500).json({ error: 'Failed to toggle usage reserve override' })
   }
 })
 

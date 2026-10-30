@@ -753,9 +753,15 @@
                             ? 'bg-red-100 text-red-800'
                             : account.status === 'temp_error'
                               ? 'bg-orange-100 text-orange-800'
-                              : account.isActive
-                                ? 'bg-green-100 text-green-800'
-                                : 'bg-red-100 text-red-800'
+                              : account.isActive && account.usageReserve?.paused
+                                ? 'bg-amber-100 text-amber-800'
+                                : account.isActive &&
+                                    account.schedulable !== false &&
+                                    account.usageReserve?.temporaryScheduling
+                                  ? 'bg-green-100 text-green-800'
+                                  : account.isActive
+                                    ? 'bg-green-100 text-green-800'
+                                    : 'bg-red-100 text-red-800'
                       ]"
                     >
                       <div
@@ -767,9 +773,11 @@
                               ? 'bg-red-500'
                               : account.status === 'temp_error'
                                 ? 'bg-orange-500'
-                                : account.isActive
-                                  ? 'bg-green-500'
-                                  : 'bg-red-500'
+                                : account.isActive && account.usageReserve?.paused
+                                  ? 'bg-amber-500'
+                                  : account.isActive
+                                    ? 'bg-green-500'
+                                    : 'bg-red-500'
                         ]"
                       />
                       {{
@@ -779,9 +787,15 @@
                             ? '异常'
                             : account.status === 'temp_error'
                               ? '临时异常'
-                              : account.isActive
-                                ? '正常'
-                                : '异常'
+                              : account.isActive && account.usageReserve?.paused
+                                ? '用量暂停'
+                                : account.isActive &&
+                                    account.schedulable !== false &&
+                                    account.usageReserve?.temporaryScheduling
+                                  ? '临时调度'
+                                  : account.isActive
+                                    ? '正常'
+                                    : '异常'
                       }}
                     </span>
                     <span
@@ -1476,6 +1490,31 @@
                       <span class="ml-1">{{ account.schedulable ? '调度' : '停用' }}</span>
                     </button>
                     <button
+                      v-if="account.usageReserve?.autoPaused"
+                      :class="[
+                        'rounded px-2.5 py-1 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50',
+                        account.usageReserve.temporaryScheduling
+                          ? 'bg-green-100 text-green-700 hover:bg-green-200'
+                          : 'bg-amber-100 text-amber-800 hover:bg-amber-200'
+                      ]"
+                      :disabled="
+                        account.isTogglingUsageReserve ||
+                        (!account.schedulable && !account.usageReserve.temporaryScheduling)
+                      "
+                      :title="getUsageReserveTitle(account)"
+                      @click="toggleUsageReserve(account)"
+                    >
+                      <i
+                        :class="[
+                          'fas',
+                          account.usageReserve.temporaryScheduling ? 'fa-toggle-on' : 'fa-play'
+                        ]"
+                      />
+                      <span class="ml-1">{{
+                        account.usageReserve.temporaryScheduling ? '取消临时' : '临时调度'
+                      }}</span>
+                    </button>
+                    <button
                       class="rounded bg-blue-100 px-2.5 py-1 text-xs font-medium text-blue-700 transition-colors hover:bg-blue-200"
                       title="编辑账户"
                       @click="editAccount(account)"
@@ -2039,6 +2078,29 @@
               <i :class="['fas', account.schedulable ? 'fa-pause' : 'fa-play']" />
               {{ account.schedulable ? '暂停' : '启用' }}
             </button>
+            <button
+              v-if="account.usageReserve?.autoPaused"
+              class="flex items-center justify-center gap-1 rounded-lg px-3 py-2 text-xs transition-colors disabled:cursor-not-allowed disabled:opacity-50"
+              :class="
+                account.usageReserve.temporaryScheduling
+                  ? 'bg-green-50 text-green-700'
+                  : 'bg-amber-50 text-amber-800'
+              "
+              :disabled="
+                account.isTogglingUsageReserve ||
+                (!account.schedulable && !account.usageReserve.temporaryScheduling)
+              "
+              :title="getUsageReserveTitle(account)"
+              @click="toggleUsageReserve(account)"
+            >
+              <i
+                :class="[
+                  'fas',
+                  account.usageReserve.temporaryScheduling ? 'fa-toggle-on' : 'fa-play'
+                ]"
+              />
+              {{ account.usageReserve.temporaryScheduling ? '取消临时' : '临时调度' }}
+            </button>
 
             <button
               v-if="canViewUsage(account)"
@@ -2488,6 +2550,22 @@ const accounts = ref([])
 const accountsLoading = ref(false)
 const refreshingBalances = ref(false)
 const tempUnavailableNowTs = ref(Date.now())
+let nextUsageReserveRefreshAt = Infinity
+let nextTemporaryReservePollAt = 0
+let reserveMutationVersion = 0
+let reservePollInFlight = false
+let reserveListVersion = 0
+
+const updateUsageReserveRefreshAt = () => {
+  nextUsageReserveRefreshAt = Math.min(
+    Infinity,
+    ...accounts.value.flatMap((account) =>
+      [account.usageReserve?.resetAt, account.usageReserve?.temporaryExpiresAt]
+        .map((resetAt) => Date.parse(resetAt))
+        .filter((resetAt) => Number.isFinite(resetAt) && resetAt > Date.now())
+    )
+  )
+}
 const accountsSortBy = ref('name')
 const accountsSortOrder = ref('asc')
 const apiKeys = ref([]) // 保留用于其他功能（如删除账户时显示绑定信息）
@@ -3072,10 +3150,21 @@ const sortedAccounts = computed(() => {
         return account.isActive && isRateLimited
       } else if (statusFilter.value === 'normal') {
         // 正常: 激活且非限流且非阻止且可调度
-        return account.isActive && !isRateLimited && !isBlocked && account.schedulable !== false
+        return (
+          account.isActive &&
+          !isRateLimited &&
+          !isBlocked &&
+          account.schedulable !== false &&
+          !account.usageReserve?.paused
+        )
       } else if (statusFilter.value === 'unschedulable') {
         // 不可调度: 激活且非限流且非阻止但不可调度
-        return account.isActive && !isRateLimited && !isBlocked && account.schedulable === false
+        return (
+          account.isActive &&
+          !isRateLimited &&
+          !isBlocked &&
+          (account.schedulable === false || account.usageReserve?.paused)
+        )
       } else if (statusFilter.value === 'other') {
         // 其他: 非限流的异常账户（未激活或被阻止）
         return !isRateLimited && (!account.isActive || isBlocked)
@@ -3171,14 +3260,25 @@ const accountStats = computed(() => {
       const normal = platformAccounts.filter((acc) => {
         const isRateLimited = isAccountRateLimited(acc)
         const isBlocked = acc.status === 'blocked' || acc.status === 'unauthorized'
-        return !isRateLimited && acc.isActive && !isBlocked && acc.schedulable !== false
+        return (
+          !isRateLimited &&
+          acc.isActive &&
+          !isBlocked &&
+          acc.schedulable !== false &&
+          !acc.usageReserve?.paused
+        )
       }).length
 
       // 不可调度: 非限流 && 激活 && 非阻止 && 不可调度
       const unschedulable = platformAccounts.filter((acc) => {
         const isRateLimited = isAccountRateLimited(acc)
         const isBlocked = acc.status === 'blocked' || acc.status === 'unauthorized'
-        return !isRateLimited && acc.isActive && !isBlocked && acc.schedulable === false
+        return (
+          !isRateLimited &&
+          acc.isActive &&
+          !isBlocked &&
+          (acc.schedulable === false || acc.usageReserve?.paused)
+        )
       }).length
 
       // 其他: 非限流的异常账户（未激活或被阻止）
@@ -3718,6 +3818,8 @@ const loadAccounts = async (forceReload = false) => {
     }
 
     accounts.value = filteredAccounts
+    reserveListVersion++
+    updateUsageReserveRefreshAt()
     cleanupSelectedAccounts()
 
     // 异步加载 Claude OAuth 账户的 usage 数据
@@ -3747,15 +3849,27 @@ const loadAccounts = async (forceReload = false) => {
 
 // 异步加载 Claude 账户的 Usage 数据
 const loadClaudeUsage = async () => {
+  const mutationVersion = reserveMutationVersion
+  const listVersion = reserveListVersion
   const response = await httpApis.getClaudeAccountsUsageApi()
+  if (listVersion !== reserveListVersion) return
   if (response.success && response.data) {
     const usageMap = response.data
+    const reserveMap = response.usageReserve || {}
+    const applyReserve = mutationVersion === reserveMutationVersion
     accounts.value = accounts.value.map((account) => {
-      if (account.platform === 'claude' && usageMap[account.id]) {
-        return { ...account, claudeUsage: usageMap[account.id] }
+      if (account.platform === 'claude') {
+        return {
+          ...account,
+          claudeUsage: usageMap[account.id] || account.claudeUsage,
+          usageReserve:
+            applyReserve && reserveMap[account.id] ? reserveMap[account.id] : account.usageReserve
+        }
       }
       return account
     })
+    if (applyReserve && Object.keys(reserveMap).length > 0) reserveMutationVersion++
+    updateUsageReserveRefreshAt()
   }
 }
 
@@ -4447,6 +4561,16 @@ const TOGGLE_SCHEDULABLE_ENDPOINT_MAP = {
   'gemini-api': (id) => `/admin/gemini-api-accounts/${id}/toggle-schedulable`
 }
 
+const TOGGLE_USAGE_RESERVE_ENDPOINT_MAP = {
+  claude: (id) => `/admin/claude-accounts/${id}/toggle-usage-reserve`,
+  ccr: (id) => `/admin/ccr-accounts/${id}/toggle-usage-reserve`
+}
+
+const USAGE_RESERVE_STATUS_ENDPOINT_MAP = {
+  claude: (id) => `/admin/claude-accounts/${id}/usage-reserve`,
+  ccr: (id) => `/admin/ccr-accounts/${id}/usage-reserve`
+}
+
 const resolveEndpointByPlatform = (mapping, platform, id) => {
   const builder = mapping[platform]
   return typeof builder === 'function' ? builder(id) : ''
@@ -4518,6 +4642,91 @@ const toggleSchedulable = async (account) => {
     showToast(data.message || '操作失败', 'error')
   }
   account.isTogglingSchedulable = false
+}
+
+const getUsageReserveTitle = (account) => {
+  if (!account.schedulable) return '请先启用原调度开关'
+  const windows = account.usageReserve?.windows?.map((item) => item.window).join('、') || ''
+  const resetAt = account.usageReserve?.temporaryExpiresAt || account.usageReserve?.resetAt
+  const resetText = resetAt ? new Date(resetAt).toLocaleString('zh-CN') : '窗口重置时'
+  return account.usageReserve?.temporaryScheduling
+    ? `${windows} 已临时放行，最迟 ${resetText} 恢复用量限制；点击可立即恢复限制`
+    : `${windows} 用量触发自动暂停；点击临时放行，最迟 ${resetText} 恢复限制，新窗口触发也会结束放行`
+}
+
+const toggleUsageReserve = async (account) => {
+  if (account.isTogglingUsageReserve) return
+  const endpoint = resolveEndpointByPlatform(
+    TOGGLE_USAGE_RESERVE_ENDPOINT_MAP,
+    account.platform,
+    account.id
+  )
+  if (!endpoint) return
+  account.isTogglingUsageReserve = true
+  reserveMutationVersion++
+  try {
+    const data = await httpApis.updateAccountByEndpointApi(endpoint, {
+      temporaryScheduling: !account.usageReserve.temporaryScheduling,
+      expectedVersion: account.usageReserve.version
+    })
+    if (data.usageReserve) {
+      account.usageReserve = data.usageReserve
+      updateUsageReserveRefreshAt()
+    }
+    if (data.success) {
+      showToast(
+        data.usageReserve.temporaryScheduling ? '已临时放行账户' : '已恢复用量限制',
+        'success'
+      )
+    } else {
+      showToast(data.message || data.error || '操作失败', 'error')
+    }
+    nextTemporaryReservePollAt = Date.now() + 15000
+  } catch (error) {
+    showToast(error.message || '操作失败', 'error')
+  } finally {
+    account.isTogglingUsageReserve = false
+  }
+}
+
+const refreshTemporaryUsageReserve = async () => {
+  const targets = accounts.value.filter(
+    (account) => account.usageReserve?.temporaryScheduling && !account.isTogglingUsageReserve
+  )
+  if (!targets.length || reservePollInFlight) return
+  reservePollInFlight = true
+  const mutationVersion = reserveMutationVersion
+  const listVersion = reserveListVersion
+  try {
+    const results = await Promise.all(
+      targets.map(async (account) => {
+        const endpoint = resolveEndpointByPlatform(
+          USAGE_RESERVE_STATUS_ENDPOINT_MAP,
+          account.platform,
+          account.id
+        )
+        if (!endpoint) return null
+        const result = await httpApis.getAccountUsageReserveApi(endpoint)
+        return { id: account.id, platform: account.platform, result }
+      })
+    )
+    if (mutationVersion !== reserveMutationVersion || listVersion !== reserveListVersion) return
+    let applied = false
+    for (const item of results) {
+      if (!item?.result?.success || !item.result.usageReserve) continue
+      const account = accounts.value.find(
+        (entry) => entry.id === item.id && entry.platform === item.platform
+      )
+      if (account) {
+        account.usageReserve = item.result.usageReserve
+        applied = true
+      }
+    }
+    if (applied) reserveMutationVersion++
+    updateUsageReserveRefreshAt()
+  } finally {
+    reservePollInFlight = false
+  }
 }
 
 // 处理创建成功
@@ -4824,7 +5033,7 @@ const isAccountExpiredForRouting = (account) => {
 const isAccountRoutingBlocked = (account) => {
   if (!account) return false
 
-  if (account.isActive === false || account.schedulable === false) {
+  if (account.isActive === false || account.schedulable === false || account.usageReserve?.paused) {
     return true
   }
 
@@ -4895,6 +5104,11 @@ const getRoutingBlockReasons = (account) => {
 
   if (account.schedulable === false) {
     reasons.push(getSchedulableReason(account) || '已暂停调度')
+  }
+
+  if (account.usageReserve?.paused) {
+    const windows = account.usageReserve.windows?.map((item) => item.window).join('、') || '用量'
+    reasons.push(`${windows} 窗口剩余额度达到保留阈值，自动暂停调度`)
   }
 
   if (isAccountRateLimited(account)) {
@@ -4985,6 +5199,8 @@ const getAccountStatusText = (account) => {
   if (account.status === 'temp_error') return '临时异常'
   // 检查是否错误
   if (account.status === 'error' || !account.isActive) return '错误'
+  if (account.usageReserve?.paused) return '用量暂停'
+  if (account.usageReserve?.temporaryScheduling && account.schedulable !== false) return '临时调度'
   // 配额超限时显示"正常"（不显示"已暂停"）
   if (account.schedulable === false && !isQuotaExceeded(account)) return '已暂停'
   // 否则正常（包括配额超限状态）
@@ -5016,6 +5232,7 @@ const getAccountStatusClass = (account) => {
   if (account.status === 'error' || !account.isActive) {
     return 'bg-red-100 text-red-800'
   }
+  if (account.usageReserve?.paused) return 'bg-amber-100 text-amber-800'
   // 配额超限时显示绿色（正常）
   if (account.schedulable === false && !isQuotaExceeded(account)) {
     return 'bg-gray-100 text-gray-800'
@@ -5048,6 +5265,7 @@ const getAccountStatusDotClass = (account) => {
   if (account.status === 'error' || !account.isActive) {
     return 'bg-red-500'
   }
+  if (account.usageReserve?.paused) return 'bg-amber-500'
   // 配额超限时显示绿色（正常）
   if (account.schedulable === false && !isQuotaExceeded(account)) {
     return 'bg-gray-500'
@@ -5520,6 +5738,20 @@ onMounted(() => {
   // 让临时不可用剩余时间在页面停留时也可见地递减
   tempUnavailableCountdownTimer = setInterval(() => {
     tempUnavailableNowTs.value = Date.now()
+    if (tempUnavailableNowTs.value >= nextUsageReserveRefreshAt && !accountsLoading.value) {
+      nextUsageReserveRefreshAt = Infinity
+      loadAccounts(false)
+    }
+    if (
+      tempUnavailableNowTs.value >= nextTemporaryReservePollAt &&
+      !accountsLoading.value &&
+      accounts.value.some((account) => account.usageReserve?.temporaryScheduling)
+    ) {
+      nextTemporaryReservePollAt = tempUnavailableNowTs.value + 15000
+      refreshTemporaryUsageReserve().catch((error) => {
+        console.debug('Usage reserve state refresh failed:', error)
+      })
+    }
   }, 1000)
 })
 

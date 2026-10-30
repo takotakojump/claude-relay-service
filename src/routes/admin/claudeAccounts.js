@@ -7,6 +7,7 @@ const express = require('express')
 const router = express.Router()
 
 const claudeAccountService = require('../../services/account/claudeAccountService')
+const accountUsageReserveService = require('../../services/accountUsageReserveService')
 const claudeRelayService = require('../../services/relay/claudeRelayService')
 const accountGroupService = require('../../services/accountGroupService')
 const accountTestSchedulerService = require('../../services/accountTestSchedulerService')
@@ -525,7 +526,13 @@ router.get('/claude-accounts', authenticateAdmin, async (req, res) => {
       })
     )
 
-    return res.json({ success: true, data: accountsWithStats })
+    const accountsWithReserve = await Promise.all(
+      accountsWithStats.map(async (account) => ({
+        ...account,
+        usageReserve: await accountUsageReserveService.getState(account, 'claude-official')
+      }))
+    )
+    return res.json({ success: true, data: accountsWithReserve })
   } catch (error) {
     logger.error('❌ Failed to get Claude accounts:', error)
     return res.status(500).json({ error: 'Failed to get Claude accounts', message: error.message })
@@ -541,6 +548,16 @@ router.get('/claude-accounts/usage', authenticateAdmin, async (req, res) => {
 
     // 批量并发获取活跃 Claude 账户的真实 Usage。Setup Token 是否支持由上游决定；
     // 不再在本地提前降级为会话时间进度，403 会由 fetchOAuthUsage 安全处理。
+    const withReserveState = async (account, claudeUsage) => {
+      let usageReserve = null
+      try {
+        usageReserve = await accountUsageReserveService.getState(account, 'claude-official')
+      } catch (error) {
+        logger.warn(`Failed to read usage reserve for Claude account ${account.id}:`, error.message)
+      }
+      return { accountId: account.id, claudeUsage, usageReserve }
+    }
+
     const usagePromises = accounts.map(async (account) => {
       if (account.isActive === 'true' && account.accessToken && account.status === 'active') {
         // 若快照在 300 秒内更新，直接使用缓存避免频繁请求
@@ -550,10 +567,7 @@ router.get('/claude-accounts/usage', authenticateAdmin, async (req, res) => {
           : 0
         const isCacheFresh = cachedUsage && lastUpdatedAt && now - lastUpdatedAt < usageCacheTtlMs
         if (isCacheFresh) {
-          return {
-            accountId: account.id,
-            claudeUsage: cachedUsage
-          }
+          return withReserveState(account, cachedUsage)
         }
 
         try {
@@ -565,32 +579,36 @@ router.get('/claude-accounts/usage', authenticateAdmin, async (req, res) => {
           }
           // 重新读取更新后的数据
           const updatedAccount = await redis.getClaudeAccount(account.id)
-          return {
-            accountId: account.id,
-            claudeUsage: claudeAccountService.buildClaudeUsageSnapshot(updatedAccount)
-          }
+          return withReserveState(
+            updatedAccount,
+            claudeAccountService.buildClaudeUsageSnapshot(updatedAccount)
+          )
         } catch (error) {
           // Inconclusive failure (network / proxy / token refresh). Keep whatever snapshot we
           // already have and leave claudeUsageUpdatedAt stale so the next load retries — clearing
           // here would both blank the panel and mark the empty result fresh for the full TTL.
           logger.debug(`Failed to fetch OAuth usage for ${account.id}:`, error.message)
-          return { accountId: account.id, claudeUsage: cachedUsage || null }
+          return withReserveState(account, cachedUsage || null)
         }
       }
-      return { accountId: account.id, claudeUsage: null }
+      return withReserveState(account, null)
     })
 
     const results = await Promise.allSettled(usagePromises)
 
     // 转换为 { accountId: usage } 映射
     const usageMap = {}
+    const usageReserveMap = {}
     results.forEach((result) => {
       if (result.status === 'fulfilled' && result.value) {
         usageMap[result.value.accountId] = result.value.claudeUsage
+        if (result.value.usageReserve) {
+          usageReserveMap[result.value.accountId] = result.value.usageReserve
+        }
       }
     })
 
-    res.json({ success: true, data: usageMap })
+    res.json({ success: true, data: usageMap, usageReserve: usageReserveMap })
   } catch (error) {
     logger.error('❌ Failed to fetch Claude accounts usage:', error)
     res.status(500).json({ error: 'Failed to fetch usage data', message: error.message })
@@ -905,6 +923,58 @@ router.post('/claude-accounts/:accountId/reset-status', authenticateAdmin, async
     return res.status(500).json({ error: 'Failed to reset status', message: error.message })
   }
 })
+
+// 读取 Claude 账户的用量保留状态
+router.get('/claude-accounts/:accountId/usage-reserve', authenticateAdmin, async (req, res) => {
+  try {
+    const account = await redis.getClaudeAccount(req.params.accountId)
+    if (!account) {
+      return res.status(404).json({ error: 'Account not found' })
+    }
+    const usageReserve = await accountUsageReserveService.getState(account, 'claude-official')
+    return res.json({ success: true, usageReserve })
+  } catch (error) {
+    logger.error('Failed to read Claude usage reserve state:', error)
+    return res.status(500).json({ error: 'Failed to read usage reserve state' })
+  }
+})
+
+// 设置 Claude 账户的临时调度状态
+router.put(
+  '/claude-accounts/:accountId/toggle-usage-reserve',
+  authenticateAdmin,
+  async (req, res) => {
+    try {
+      const { temporaryScheduling, expectedVersion } = req.body || {}
+      if (
+        typeof temporaryScheduling !== 'boolean' ||
+        (temporaryScheduling && typeof expectedVersion !== 'string')
+      ) {
+        return res.status(400).json({ error: 'Invalid usage reserve request' })
+      }
+      const accounts = await claudeAccountService.getAllAccounts()
+      const account = accounts.find((item) => item.id === req.params.accountId)
+      if (!account) {
+        return res.status(404).json({ error: 'Account not found' })
+      }
+      const state = await accountUsageReserveService.setTemporaryScheduling(
+        account,
+        'claude-official',
+        temporaryScheduling,
+        expectedVersion
+      )
+      return res.json({ success: true, usageReserve: state })
+    } catch (error) {
+      if (error.code === 'USAGE_RESERVE_STATE_CHANGED') {
+        return res
+          .status(409)
+          .json({ success: false, message: error.message, usageReserve: error.state })
+      }
+      logger.error('Failed to toggle Claude usage reserve override:', error)
+      return res.status(500).json({ error: 'Failed to toggle usage reserve override' })
+    }
+  }
+)
 
 // 切换Claude账户调度状态
 router.put(

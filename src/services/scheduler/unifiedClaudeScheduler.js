@@ -12,8 +12,7 @@ const {
 } = require('../../utils/modelHelper')
 const { isSchedulable, sortAccountsByPriority } = require('../../utils/commonHelper')
 const upstreamErrorHelper = require('../../utils/upstreamErrorHelper')
-const claudeRelayConfigService = require('../claudeRelayConfigService')
-const { getUsageReservePause } = require('../../utils/accountUsageReserve')
+const accountUsageReserveService = require('../accountUsageReserveService')
 const config = require('../../../config/config')
 
 /**
@@ -49,35 +48,7 @@ class UnifiedClaudeScheduler {
   }
 
   async _isUsageReservePaused(account, accountType) {
-    if (accountType !== 'claude-official' && accountType !== 'ccr') {
-      return false
-    }
-    const { accountUsageReservePercent } = await claudeRelayConfigService.getConfig()
-    if (!accountUsageReservePercent) {
-      return false
-    }
-    const client = redis.getClientSafe()
-    const pauseKey = `usage_reserve_pause:${accountType}:${account.id}`
-    const savedResetAt = await client.get(pauseKey)
-    if (savedResetAt && Date.parse(savedResetAt) > Date.now()) {
-      return true
-    }
-    const snapshotAccount =
-      accountType === 'ccr' && !account.sessionWindow
-        ? {
-            ...account,
-            sessionWindow: await ccrAccountService.getSessionWindowSnapshot(account.id)
-          }
-        : account
-    const pause = getUsageReservePause(snapshotAccount, accountType, accountUsageReservePercent)
-    if (pause) {
-      const ttlSeconds = Math.max(1, Math.ceil((Date.parse(pause.resetAt) - Date.now()) / 1000))
-      await client.set(pauseKey, pause.resetAt, 'EX', ttlSeconds)
-      logger.debug(
-        `Skipping ${accountType} account ${account.id}: ${pause.window} usage ${pause.utilization}% reaches reserve until ${pause.resetAt}`
-      )
-    }
-    return Boolean(pause)
+    return (await accountUsageReserveService.getState(account, accountType)).paused
   }
 
   // 🔍 检查账户是否支持请求的模型

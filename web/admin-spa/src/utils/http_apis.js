@@ -233,6 +233,7 @@ export const updateCcrAccountApi = (id, data) =>
 
 // 账户通用操作
 export const toggleAccountStatusApi = (endpoint) => request({ url: endpoint, method: 'PUT' })
+export const getAccountUsageReserveApi = (endpoint) => request({ url: endpoint, method: 'GET' })
 export const deleteAccountByEndpointApi = (endpoint) => request({ url: endpoint, method: 'DELETE' })
 export const testAccountByEndpointApi = (endpoint) => request({ url: endpoint, method: 'POST' })
 export const updateAccountByEndpointApi = (endpoint, data) =>

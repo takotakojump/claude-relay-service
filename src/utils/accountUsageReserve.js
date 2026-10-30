@@ -25,10 +25,9 @@ const parseUtilization = (value, isRatio = false) => {
   return isRatio && numeric <= 1 ? numeric * 100 : numeric
 }
 
-const getUsageReservePause = (account, accountType, remainingPercent, now = Date.now()) => {
-  const threshold = Number(remainingPercent)
-  if (!Number.isFinite(threshold) || threshold <= 0 || threshold > 100 || !account) {
-    return null
+const getUsageWindows = (account, accountType, now = Date.now()) => {
+  if (!account) {
+    return []
   }
 
   let windows = []
@@ -84,33 +83,40 @@ const getUsageReservePause = (account, accountType, remainingPercent, now = Date
         ])
       }
     } catch (_) {
-      return null
+      return []
     }
   } else {
-    return null
+    return []
   }
 
-  let pause = null
-  let latestReset = 0
+  const activeWindows = []
   for (const [key, rawUtilization, rawReset] of windows) {
     const utilization = parseUtilization(rawUtilization, accountType === 'ccr')
     const resetAt = parseReset(rawReset)
-    if (
-      utilization !== null &&
-      resetAt !== null &&
-      resetAt > now &&
-      100 - utilization <= threshold &&
-      resetAt > latestReset
-    ) {
-      latestReset = resetAt
-      pause = {
+    if (utilization !== null && resetAt !== null && resetAt > now) {
+      activeWindows.push({
         window: key || 'unknown',
         utilization,
         resetAt: new Date(resetAt).toISOString()
-      }
+      })
     }
   }
-  return pause
+  return activeWindows
 }
 
-module.exports = { getUsageReservePause }
+const getUsageReserveWindows = (account, accountType, remainingPercent, now = Date.now()) => {
+  const threshold = Number(remainingPercent)
+  if (!Number.isFinite(threshold) || threshold <= 0 || threshold > 100) {
+    return []
+  }
+  return getUsageWindows(account, accountType, now).filter(
+    (window) => 100 - window.utilization <= threshold
+  )
+}
+
+const getUsageReservePause = (account, accountType, remainingPercent, now = Date.now()) =>
+  getUsageReserveWindows(account, accountType, remainingPercent, now).sort(
+    (a, b) => Date.parse(b.resetAt) - Date.parse(a.resetAt)
+  )[0] || null
+
+module.exports = { getUsageReservePause, getUsageReserveWindows, getUsageWindows }
