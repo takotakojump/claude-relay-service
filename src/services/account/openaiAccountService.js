@@ -17,6 +17,11 @@ const tokenRefreshService = require('../tokenRefreshService')
 const codexClientIdentityService = require('../codexClientIdentityService')
 const { createEncryptor } = require('../../utils/commonHelper')
 const { resolveResetAt, normalizeLimitId } = require('../../utils/codexRateLimitHeaders')
+const {
+  AccountReauthorizeError,
+  compareAccountIdentity,
+  assertAccountIdentity
+} = require('../../utils/accountReauthHelper')
 
 // 使用 commonHelper 的加密器
 const encryptor = createEncryptor('openai-account-salt')
@@ -1282,6 +1287,86 @@ async function resetAccountStatus(accountId) {
   return { success: true, message: 'Account status reset successfully' }
 }
 
+/**
+ * 🔐 重新授权：原地替换 OAuth 凭证
+ * 账户 ID 不变，API Key 专属绑定、分组、优先级、代理等配置全部保留；
+ * 写入后清除所有异常状态并恢复调度。
+ * @param {string} accountId - 账户 ID
+ * @param {Object} payload - exchange-code 接口返回的 { tokens, accountInfo }
+ * @param {Object} options
+ * @param {boolean} options.force - 身份不一致时是否仍然替换
+ */
+async function reauthorizeAccount(accountId, { tokens, accountInfo } = {}, { force = false } = {}) {
+  const account = await getAccount(accountId)
+  if (!account) {
+    throw new Error('Account not found')
+  }
+
+  if (!tokens || !tokens.accessToken) {
+    throw new AccountReauthorizeError('授权结果缺少 Access Token')
+  }
+  if (!tokens.refreshToken) {
+    throw new AccountReauthorizeError('授权结果缺少 Refresh Token，请重新授权')
+  }
+
+  const info = accountInfo || {}
+  const identityCheck = assertAccountIdentity(
+    compareAccountIdentity([
+      { field: 'chatgptUserId', previous: account.chatgptUserId, next: info.chatgptUserId },
+      // accountId 是 ChatGPT 工作区 ID：同一用户换了工作区，额度和套餐都会变
+      { field: 'chatgptAccountId', previous: account.accountId, next: info.accountId },
+      { field: 'email', type: 'email', previous: account.email, next: info.email }
+    ]),
+    { force }
+  )
+
+  const now = new Date().toISOString()
+  const expiresInSeconds = Number(tokens.expires_in)
+  const expiresAt = new Date(
+    Date.now() +
+      (Number.isFinite(expiresInSeconds) && expiresInSeconds > 0
+        ? expiresInSeconds * 1000
+        : 60 * 60 * 1000)
+  ).toISOString()
+
+  await updateAccount(accountId, {
+    openaiOauth: {
+      idToken: tokens.idToken || '',
+      accessToken: tokens.accessToken,
+      refreshToken: tokens.refreshToken,
+      expires_in: tokens.expires_in
+    },
+    idToken: tokens.idToken || '',
+    accessToken: tokens.accessToken,
+    refreshToken: tokens.refreshToken,
+    expiresAt,
+    accountId: info.accountId || account.accountId || '',
+    chatgptUserId: info.chatgptUserId || account.chatgptUserId || '',
+    organizationId: info.organizationId || account.organizationId || '',
+    organizationRole: info.organizationRole || account.organizationRole || '',
+    organizationTitle: info.organizationTitle || account.organizationTitle || '',
+    planType: info.planType || account.planType || '',
+    email: info.email || account.email || '',
+    emailVerified:
+      info.emailVerified !== undefined
+        ? String(info.emailVerified === true)
+        : account.emailVerified || 'false',
+    lastRefresh: now,
+    reauthorizedAt: now,
+    // resetAccountStatus 不清理 401 计数，这里补上
+    unauthorizedAt: '',
+    unauthorizedCount: '0'
+  })
+
+  await resetAccountStatus(accountId)
+
+  logger.success(
+    `🔐 Re-authorized OpenAI account: ${account.name} (${accountId}), identity: ${identityCheck}`
+  )
+
+  return { accountId, identityCheck }
+}
+
 // 切换账户调度状态
 async function toggleSchedulable(accountId) {
   const account = await getAccount(accountId)
@@ -1827,6 +1912,7 @@ module.exports = {
   setAccountRateLimited,
   markAccountUnauthorized,
   resetAccountStatus,
+  reauthorizeAccount,
   toggleSchedulable,
   getAccountRateLimitInfo,
   updateAccountUsage,

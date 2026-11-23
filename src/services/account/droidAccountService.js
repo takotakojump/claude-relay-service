@@ -7,6 +7,11 @@ const { maskToken } = require('../../utils/tokenMask')
 const ProxyHelper = require('../../utils/proxyHelper')
 const { createEncryptor, isTruthy } = require('../../utils/commonHelper')
 const upstreamErrorHelper = require('../../utils/upstreamErrorHelper')
+const {
+  AccountReauthorizeError,
+  compareAccountIdentity,
+  assertAccountIdentity
+} = require('../../utils/accountReauthHelper')
 
 /**
  * Droid 账户管理服务
@@ -1496,6 +1501,182 @@ class DroidAccountService {
     } catch (error) {
       logger.warn(`⚠️ Failed to update lastUsedAt for Droid account ${accountId}:`, error)
     }
+  }
+
+  /**
+   * 从 WorkOS user 对象推导账户归属字段
+   */
+  _deriveOwnerFields(user) {
+    if (!user || typeof user !== 'object') {
+      return {}
+    }
+
+    const fields = {}
+    const email = typeof user.email === 'string' ? user.email.trim() : ''
+    if (email) {
+      fields.ownerEmail = email
+    }
+
+    const nameParts = [user.first_name, user.last_name]
+      .filter((part) => typeof part === 'string' && part.trim())
+      .map((part) => part.trim())
+    const derivedName =
+      nameParts.join(' ').trim() ||
+      (typeof user.name === 'string' ? user.name.trim() : '') ||
+      (typeof user.display_name === 'string' ? user.display_name.trim() : '')
+    const displayName = derivedName || email
+    if (displayName) {
+      fields.owner = displayName
+      fields.ownerName = displayName
+      fields.ownerDisplayName = displayName
+    }
+
+    if (typeof user.id === 'string' && user.id.trim()) {
+      fields.userId = user.id.trim()
+    }
+
+    return fields
+  }
+
+  /**
+   * 🔐 重新授权：原地替换 OAuth 凭证
+   * 账户 ID 不变，API Key 专属绑定、分组、优先级、代理、端点类型等配置全部保留；
+   * 写入后清除所有异常状态并恢复调度（保留原有的启用/禁用状态）。
+   * @param {string} accountId - 账户 ID
+   * @param {Object} rawTokens - exchange-code 接口返回的 tokens（WorkOS 原始字段）
+   * @param {Object} options
+   * @param {boolean} options.force - 身份不一致时是否仍然替换
+   */
+  async reauthorizeAccount(accountId, rawTokens = {}, { force = false } = {}) {
+    const account = await this.getAccount(accountId)
+    if (!account) {
+      throw new Error(`Droid account not found: ${accountId}`)
+    }
+
+    const authMethod = String(account.authenticationMethod || '')
+      .trim()
+      .toLowerCase()
+    if (authMethod === 'api_key') {
+      throw new AccountReauthorizeError('API Key 模式的 Droid 账户不支持 OAuth 重新授权')
+    }
+
+    const source = rawTokens && typeof rawTokens === 'object' ? rawTokens : {}
+    let tokens = {
+      accessToken: source.accessToken || source.access_token || '',
+      refreshToken: source.refreshToken || source.refresh_token || '',
+      expiresAt: source.expiresAt || source.expires_at || '',
+      expiresIn: source.expiresIn ?? source.expires_in ?? null,
+      tokenType: source.tokenType || source.token_type || 'Bearer',
+      organizationId: source.organizationId || source.organization_id || '',
+      authenticationMethod: source.authenticationMethod || source.authentication_method || '',
+      user: source.user || null
+    }
+
+    if (!tokens.accessToken) {
+      throw new AccountReauthorizeError('授权结果缺少 Access Token')
+    }
+    if (!tokens.refreshToken) {
+      throw new AccountReauthorizeError(
+        '授权成功但未返回 Refresh Token，请确认已授予离线访问权限后重试'
+      )
+    }
+
+    const identityCheck = assertAccountIdentity(
+      compareAccountIdentity([
+        { field: 'userId', previous: account.userId, next: tokens.user?.id },
+        { field: 'email', type: 'email', previous: account.ownerEmail, next: tokens.user?.email }
+      ]),
+      { force }
+    )
+
+    let proxyConfig = null
+    if (account.proxy && typeof account.proxy === 'object') {
+      proxyConfig = account.proxy
+    } else if (typeof account.proxy === 'string' && account.proxy.trim()) {
+      try {
+        proxyConfig = JSON.parse(account.proxy)
+      } catch (error) {
+        logger.warn('⚠️ Failed to parse Droid proxy config, ignored:', error.message)
+      }
+    }
+
+    // 与创建流程一致：换取绑定组织的令牌，失败时保留设备码授权拿到的令牌
+    let organizationId = tokens.organizationId || account.organizationId || ''
+    try {
+      if (!organizationId) {
+        const orgIds = await this._fetchFactoryOrgIds(tokens.accessToken, proxyConfig)
+        organizationId =
+          (Array.isArray(orgIds) ? orgIds.find((id) => typeof id === 'string' && id.trim()) : '') ||
+          ''
+      }
+
+      if (organizationId) {
+        const refreshed = await this._refreshTokensWithWorkOS(
+          tokens.refreshToken,
+          proxyConfig,
+          organizationId
+        )
+        tokens = {
+          ...tokens,
+          accessToken: refreshed.accessToken || tokens.accessToken,
+          refreshToken: refreshed.refreshToken || tokens.refreshToken,
+          expiresAt: refreshed.expiresAt || tokens.expiresAt,
+          expiresIn: refreshed.expiresIn ?? tokens.expiresIn,
+          tokenType: refreshed.tokenType || tokens.tokenType,
+          authenticationMethod: refreshed.authenticationMethod || tokens.authenticationMethod,
+          user: refreshed.user || tokens.user
+        }
+        organizationId = refreshed.organizationId || organizationId
+      } else {
+        logger.warn(`⚠️ No organization ID found while re-authorizing Droid account ${accountId}`)
+      }
+    } catch (error) {
+      logger.warn(
+        `⚠️ Organization-scoped refresh failed while re-authorizing Droid account ${accountId}: ${error.message}`
+      )
+    }
+
+    let { expiresAt } = tokens
+    let expiresIn = Number(tokens.expiresIn)
+    if (!Number.isFinite(expiresIn) || expiresIn <= 0) {
+      expiresIn = null
+    }
+    if (!expiresAt) {
+      const seconds = expiresIn || this.tokenValidHours * 3600
+      expiresAt = new Date(Date.now() + seconds * 1000).toISOString()
+      expiresIn = seconds
+    }
+
+    const now = new Date().toISOString()
+    await redis.setDroidAccount(accountId, {
+      accessToken: this._encryptSensitiveData(tokens.accessToken),
+      refreshToken: this._encryptSensitiveData(tokens.refreshToken),
+      expiresAt,
+      expiresIn: expiresIn !== null ? String(expiresIn) : '',
+      tokenType: tokens.tokenType || 'Bearer',
+      // 手动录入（manual）的账户经过 OAuth 重新授权后不再是手动模式
+      authenticationMethod:
+        tokens.authenticationMethod ||
+        (authMethod === 'manual' ? '' : account.authenticationMethod || ''),
+      organizationId,
+      ...this._deriveOwnerFields(tokens.user),
+      lastRefreshAt: now,
+      updatedAt: now,
+      reauthorizedAt: now
+    })
+
+    const wasDisabled = account.isActive === 'false'
+    await this.resetAccountStatus(accountId)
+    if (wasDisabled) {
+      // resetAccountStatus 会把账户设为启用，重新授权不应改变管理员的启用/禁用选择
+      await redis.setDroidAccount(accountId, { isActive: 'false' })
+    }
+
+    logger.success(
+      `🔐 Re-authorized Droid account: ${account.name} (${accountId}), identity: ${identityCheck}`
+    )
+
+    return { accountId, identityCheck }
   }
 
   // 🔄 重置Droid账户所有异常状态

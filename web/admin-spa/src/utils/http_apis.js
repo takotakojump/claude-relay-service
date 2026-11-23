@@ -238,6 +238,9 @@ export const deleteAccountByEndpointApi = (endpoint) => request({ url: endpoint,
 export const testAccountByEndpointApi = (endpoint) => request({ url: endpoint, method: 'POST' })
 export const updateAccountByEndpointApi = (endpoint, data) =>
   request({ url: endpoint, method: 'PUT', data })
+// 重新授权：原地替换 OAuth 凭证（后端可能要走代理拉取资料/换取组织令牌，放宽超时）
+export const reauthorizeAccountByEndpointApi = (endpoint, data) =>
+  request({ url: endpoint, method: 'POST', data, timeout: 60000 })
 
 // 账户使用统计
 export const getClaudeAccountsUsageApi = () =>

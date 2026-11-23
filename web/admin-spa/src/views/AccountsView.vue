@@ -1515,6 +1515,15 @@
                       }}</span>
                     </button>
                     <button
+                      v-if="needsReauthorization(account)"
+                      class="rounded bg-red-100 px-2.5 py-1 text-xs font-medium text-red-700 transition-colors hover:bg-red-200 dark:bg-red-900/40 dark:text-red-300 dark:hover:bg-red-800/50"
+                      title="凭证已失效，重新授权（保留账户 ID 和全部绑定）"
+                      @click="openReauthModal(account)"
+                    >
+                      <i class="fas fa-key" />
+                      <span class="ml-1">重新授权</span>
+                    </button>
+                    <button
                       class="rounded bg-blue-100 px-2.5 py-1 text-xs font-medium text-blue-700 transition-colors hover:bg-blue-200"
                       title="编辑账户"
                       @click="editAccount(account)"
@@ -2143,6 +2152,20 @@
             </button>
 
             <button
+              v-if="canReauthorize(account)"
+              :class="[
+                'flex flex-1 items-center justify-center gap-1 rounded-lg px-3 py-2 text-xs transition-colors',
+                needsReauthorization(account)
+                  ? 'bg-red-50 text-red-600 hover:bg-red-100 dark:bg-red-900/40 dark:text-red-300 dark:hover:bg-red-800/50'
+                  : 'bg-green-50 text-green-600 hover:bg-green-100 dark:bg-green-900/40 dark:text-green-300 dark:hover:bg-green-800/50'
+              ]"
+              @click="openReauthModal(account)"
+            >
+              <i class="fas fa-key" />
+              授权
+            </button>
+
+            <button
               class="flex-1 rounded-lg bg-gray-50 px-3 py-2 text-xs text-gray-600 transition-colors hover:bg-gray-100"
               @click="editAccount(account)"
             >
@@ -2274,6 +2297,14 @@
       :account="editingAccount"
       @close="showEditAccountModal = false"
       @success="handleEditSuccess"
+    />
+
+    <!-- 重新授权模态框 -->
+    <AccountReauthModal
+      v-if="showReauthModal && reauthTargetAccount"
+      :account="reauthTargetAccount"
+      @close="closeReauthModal"
+      @success="handleReauthSuccess"
     />
 
     <!-- 确认弹窗 -->
@@ -2508,6 +2539,7 @@ import {
   isCodexSnapshotStale
 } from '@/utils/codexUsage'
 import AccountForm from '@/components/accounts/AccountForm.vue'
+import AccountReauthModal from '@/components/accounts/AccountReauthModal.vue'
 import CcrAccountForm from '@/components/accounts/CcrAccountForm.vue'
 import AccountUsageDetailModal from '@/components/accounts/AccountUsageDetailModal.vue'
 import AccountErrorHistoryModal from '@/components/accounts/AccountErrorHistoryModal.vue'
@@ -2835,6 +2867,8 @@ const showCreateAccountModal = ref(false)
 const newAccountPlatform = ref(null) // 跟踪新建账户选择的平台
 const showEditAccountModal = ref(false)
 const editingAccount = ref(null)
+const showReauthModal = ref(false)
+const reauthTargetAccount = ref(null)
 
 const collectAccountSearchableStrings = (account) => {
   const values = new Set()
@@ -2921,6 +2955,21 @@ const showResetButton = (account) => {
 const getAccountActions = (account) => {
   const actions = []
 
+  // 重新授权：凭证失效时排在最前，否则放在删除之前
+  const reauthAction = canReauthorize(account)
+    ? {
+        key: 'reauthorize',
+        label: '重新授权',
+        icon: 'fa-key',
+        color: needsReauthorization(account) ? 'red' : 'green',
+        handler: () => openReauthModal(account)
+      }
+    : null
+  const reauthFirst = reauthAction && needsReauthorization(account)
+  if (reauthFirst) {
+    actions.push(reauthAction)
+  }
+
   // 重置状态（仅在需要时显示）
   if (showResetButton(account)) {
     actions.push({
@@ -2977,6 +3026,10 @@ const getAccountActions = (account) => {
       color: 'amber',
       handler: () => openScheduledTestModal(account)
     })
+  }
+
+  if (reauthAction && !reauthFirst) {
+    actions.push(reauthAction)
   }
 
   // 删除
@@ -3612,6 +3665,7 @@ const loadBalanceCacheForAccounts = async () => {
 
 // 加载账户列表
 const loadAccounts = async (forceReload = false) => {
+  const reserveVersionAtStart = reserveMutationVersion
   accountsLoading.value = true
   try {
     // 构建查询参数（用于其他筛选情况）
@@ -3817,6 +3871,17 @@ const loadAccounts = async (forceReload = false) => {
       // 忽略错误，不影响账户列表显示
     }
 
+    if (reserveVersionAtStart !== reserveMutationVersion) {
+      const latestReserve = new Map(
+        accounts.value.map((account) => [`${account.platform}:${account.id}`, account.usageReserve])
+      )
+      filteredAccounts = filteredAccounts.map((account) => {
+        const key = `${account.platform}:${account.id}`
+        return latestReserve.has(key)
+          ? { ...account, usageReserve: latestReserve.get(key) }
+          : account
+      })
+    }
     accounts.value = filteredAccounts
     reserveListVersion++
     updateUsageReserveRefreshAt()
@@ -4353,6 +4418,43 @@ const editAccount = (account) => {
   showEditAccountModal.value = true
 }
 
+// 支持 OAuth 重新授权的账户（原地替换凭证，账户 ID 与专属绑定保持不变）
+const canReauthorize = (account) => {
+  if (!account) return false
+  switch (account.platform) {
+    case 'claude':
+    case 'gemini':
+    case 'openai':
+      return true
+    case 'droid':
+      return String(account.authenticationMethod || '').toLowerCase() !== 'api_key'
+    case 'grok':
+      return account.authType === 'oauth'
+    default:
+      return false
+  }
+}
+
+// 凭证类异常：重新授权大概率能修复，在列表中突出显示入口
+const needsReauthorization = (account) =>
+  canReauthorize(account) &&
+  ['unauthorized', 'error', 'blocked', 'expired'].includes(account.status)
+
+const openReauthModal = (account) => {
+  reauthTargetAccount.value = account
+  showReauthModal.value = true
+}
+
+const closeReauthModal = () => {
+  showReauthModal.value = false
+  reauthTargetAccount.value = null
+}
+
+const handleReauthSuccess = () => {
+  closeReauthModal()
+  loadAccounts()
+}
+
 const getBoundApiKeysForAccount = (account) => {
   if (!account || !account.id) return []
   return apiKeys.value.filter((key) => {
@@ -4664,12 +4766,17 @@ const toggleUsageReserve = async (account) => {
   if (!endpoint) return
   account.isTogglingUsageReserve = true
   reserveMutationVersion++
+  const currentAccount = () =>
+    accounts.value.find((item) => item.platform === account.platform && item.id === account.id)
   try {
     const data = await httpApis.updateAccountByEndpointApi(endpoint, {
       temporaryScheduling: !account.usageReserve.temporaryScheduling,
       expectedVersion: account.usageReserve.version
     })
     if (data.usageReserve) {
+      reserveMutationVersion++
+      const current = currentAccount()
+      if (current) current.usageReserve = data.usageReserve
       account.usageReserve = data.usageReserve
       updateUsageReserveRefreshAt()
     }
@@ -4686,6 +4793,8 @@ const toggleUsageReserve = async (account) => {
     showToast(error.message || '操作失败', 'error')
   } finally {
     account.isTogglingUsageReserve = false
+    const current = currentAccount()
+    if (current) current.isTogglingUsageReserve = false
   }
 }
 

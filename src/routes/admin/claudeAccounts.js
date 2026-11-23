@@ -23,7 +23,8 @@ const {
   parseBooleanLike,
   normalizeOptionalNonNegativeInteger
 } = require('../../utils/tempUnavailablePolicy')
-const { formatAccountExpiry, mapExpiryField } = require('./utils')
+const { shouldRecoverAfterCredentialUpdate } = require('../../utils/accountReauthHelper')
+const { formatAccountExpiry, mapExpiryField, sendReauthorizeError } = require('./utils')
 
 const TEMP_UNAVAILABLE_TTL_FIELDS = ['tempUnavailable503TtlSeconds', 'tempUnavailable5xxTtlSeconds']
 
@@ -806,6 +807,17 @@ router.put('/claude-accounts/:accountId', authenticateAdmin, async (req, res) =>
 
     await claudeAccountService.updateAccount(accountId, mappedUpdates)
 
+    // 手动写入了新凭证且账户原本处于异常状态：清除异常并恢复调度
+    if (
+      shouldRecoverAfterCredentialUpdate(currentAccount.status, mappedUpdates, [
+        'claudeAiOauth',
+        'refreshToken'
+      ])
+    ) {
+      await claudeAccountService.resetAccountStatus(accountId)
+      logger.info(`🔄 Recovered Claude account ${accountId} after credential update`)
+    }
+
     logger.success(`📝 Admin updated Claude account: ${accountId}`)
     return res.json({ success: true, message: 'Claude account updated successfully' })
   } catch (error) {
@@ -906,6 +918,23 @@ router.post('/claude-accounts/:accountId/refresh', authenticateAdmin, async (req
   } catch (error) {
     logger.error('❌ Failed to refresh Claude account token:', error)
     return res.status(500).json({ error: 'Failed to refresh token', message: error.message })
+  }
+})
+
+// 🔐 重新授权Claude账户（原地替换凭证，保留账户 ID、专属绑定、分组等全部配置）
+router.post('/claude-accounts/:accountId/reauthorize', authenticateAdmin, async (req, res) => {
+  try {
+    const { accountId } = req.params
+    const { claudeAiOauth, force } = req.body || {}
+
+    const result = await claudeAccountService.reauthorizeAccount(accountId, claudeAiOauth, {
+      force: force === true
+    })
+
+    logger.success(`🔐 Admin re-authorized Claude account: ${accountId}`)
+    return res.json({ success: true, data: result })
+  } catch (error) {
+    return sendReauthorizeError(res, error, 'Claude')
   }
 })
 

@@ -4,6 +4,7 @@
  */
 
 const logger = require('../../utils/logger')
+const { IDENTITY_MISMATCH_CODE } = require('../../utils/accountReauthHelper')
 
 /**
  * 处理可为空的时间字段
@@ -71,8 +72,47 @@ function formatAccountExpiry(account) {
   }
 }
 
+/**
+ * 统一处理"重新授权"接口的错误响应
+ * - 身份不一致 → 409，附带不一致字段，前端据此二次确认后带 force 重试
+ * - 授权数据不合法 → 400
+ * - 账户不存在 → 404
+ * @param {Object} res - Express response
+ * @param {Error} error - 捕获的错误
+ * @param {string} platformLabel - 平台名称，仅用于日志
+ */
+function sendReauthorizeError(res, error, platformLabel) {
+  if (error && error.code === IDENTITY_MISMATCH_CODE) {
+    logger.warn(`⚠️ ${platformLabel} re-authorization rejected: identity mismatch`, {
+      mismatches: error.mismatches
+    })
+    return res.status(409).json({
+      success: false,
+      code: IDENTITY_MISMATCH_CODE,
+      message: '授权的账户与原账户身份不一致',
+      mismatches: error.mismatches || []
+    })
+  }
+
+  if (error && /not found/i.test(error.message || '')) {
+    return res.status(404).json({ success: false, message: '账户不存在' })
+  }
+
+  if (error && error.statusCode === 400) {
+    return res.status(400).json({ success: false, message: error.message })
+  }
+
+  logger.error(`❌ Failed to re-authorize ${platformLabel} account:`, error)
+  return res.status(500).json({
+    success: false,
+    message: '重新授权失败',
+    error: error ? error.message : 'Unknown error'
+  })
+}
+
 module.exports = {
   normalizeNullableDate,
   mapExpiryField,
-  formatAccountExpiry
+  formatAccountExpiry,
+  sendReauthorizeError
 }

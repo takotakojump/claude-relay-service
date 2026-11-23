@@ -4139,7 +4139,20 @@
                 <p class="mb-2 text-sm text-amber-800 dark:text-amber-300">
                   可以更新 Access Token 和 Refresh Token。为了安全起见，不会显示当前的 Token 值。
                 </p>
-                <p class="text-xs text-amber-600 dark:text-amber-400">💡 留空表示不更新该字段。</p>
+                <p
+                  v-if="form.platform === 'claude'"
+                  class="text-xs text-amber-600 dark:text-amber-400"
+                >
+                  💡 两项都留空表示不更新；只填 Access Token 会按长期令牌（如 Setup
+                  Token）处理，并清除原有的 Refresh Token。
+                </p>
+                <p v-else class="text-xs text-amber-600 dark:text-amber-400">
+                  💡 留空表示不更新该字段。
+                </p>
+                <p class="mt-1 text-xs text-amber-600 dark:text-amber-400">
+                  🔑 Token 已失效时，推荐在账户列表的操作菜单中使用「重新授权」，无需手动复制
+                  Token。
+                </p>
               </div>
             </div>
 
@@ -6035,6 +6048,13 @@ const updateAccount = async () => {
           scope: 'https://www.googleapis.com/auth/cloud-platform',
           token_type: 'Bearer',
           expiry_date: Date.now() + expiresInMs
+        }
+        // 运行时读取的是顶层 accessToken / refreshToken，只写 geminiOauth 不会生效
+        if (trimmedAccessToken) {
+          data.accessToken = trimmedAccessToken
+        }
+        if (trimmedRefreshToken) {
+          data.refreshToken = trimmedRefreshToken
         }
       } else if (props.account.platform === 'openai') {
         // OpenAI需要构建openaiOauth对象

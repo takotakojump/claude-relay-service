@@ -4,6 +4,11 @@ const ccrAccountService = require('./account/ccrAccountService')
 const { getUsageWindows } = require('../utils/accountUsageReserve')
 
 const windowId = ({ window, resetAt }) => `${window}:${resetAt}`
+// OAuth usage and response headers can report slightly different reset times for one window.
+const SAME_WINDOW_RESET_TOLERANCE_MS = 5 * 60 * 1000
+const isSameWindow = (a, b) =>
+  a.window === b.window &&
+  Math.abs(Date.parse(a.resetAt) - Date.parse(b.resetAt)) <= SAME_WINDOW_RESET_TOLERANCE_MS
 const stateVersion = (windows, resetAt) =>
   windows.length ? JSON.stringify([windows.map(windowId).sort(), resetAt]) : null
 const activeWindows = (windows, now) =>
@@ -22,9 +27,11 @@ const readSavedWindows = (raw, current) => {
     // Previous releases stored only the latest reset time.
   }
   const resetAt = new Date(raw).toISOString()
-  return current.filter((item) => item.resetAt === resetAt).length
-    ? current.filter((item) => item.resetAt === resetAt)
-    : [{ window: 'unknown', resetAt }]
+  const matching = current.filter(
+    (item) =>
+      Math.abs(Date.parse(item.resetAt) - Date.parse(resetAt)) <= SAME_WINDOW_RESET_TOLERANCE_MS
+  )
+  return matching.length ? matching : [{ window: 'unknown', resetAt }]
 }
 
 const getState = async (account, accountType, now = Date.now()) => {
@@ -90,11 +97,13 @@ const getState = async (account, accountType, now = Date.now()) => {
     }
   }
 
-  const byId = new Map()
+  const windows = []
   for (const item of [...saved, ...current]) {
-    byId.set(windowId(item), item)
+    if (!windows.some((existing) => isSameWindow(existing, item))) {
+      windows.push(item)
+    }
   }
-  const windows = [...byId.values()].sort((a, b) => Date.parse(a.resetAt) - Date.parse(b.resetAt))
+  windows.sort((a, b) => Date.parse(a.resetAt) - Date.parse(b.resetAt))
   const nearestResetAt =
     [...windows, ...observed].sort((a, b) => Date.parse(a.resetAt) - Date.parse(b.resetAt))[0]
       ?.resetAt || null

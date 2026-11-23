@@ -12,7 +12,9 @@
             <i class="fas fa-link text-white" />
           </div>
           <div class="flex-1">
-            <h4 class="mb-3 font-semibold text-blue-900 dark:text-blue-200">Claude 账户授权</h4>
+            <h4 class="mb-3 font-semibold text-blue-900 dark:text-blue-200">
+              {{ isClaudeSetupToken ? 'Claude Setup Token 授权' : 'Claude 账户授权' }}
+            </h4>
 
             <!-- 授权方式选择 -->
             <div class="mb-4">
@@ -62,7 +64,7 @@
                     <i class="fas fa-cookie text-blue-500" />
                     sessionKey
                     <span
-                      v-if="parsedSessionKeyCount > 1"
+                      v-if="!singleAccount && parsedSessionKeyCount > 1"
                       class="rounded-full bg-blue-500 px-2 py-0.5 text-xs text-white"
                     >
                       {{ parsedSessionKeyCount }} 个
@@ -78,15 +80,26 @@
                   <textarea
                     v-model="sessionKey"
                     class="form-input w-full resize-y font-mono text-sm"
-                    placeholder="每行一个 sessionKey，例如：&#10;sk-ant-sid01-xxxxx...&#10;sk-ant-sid01-yyyyy..."
+                    :placeholder="
+                      singleAccount
+                        ? '粘贴原账户的 sessionKey，例如：sk-ant-sid01-xxxxx...'
+                        : '每行一个 sessionKey，例如：\nsk-ant-sid01-xxxxx...\nsk-ant-sid01-yyyyy...'
+                    "
                     rows="3"
                   />
                   <p
-                    v-if="parsedSessionKeyCount > 1"
+                    v-if="!singleAccount && parsedSessionKeyCount > 1"
                     class="mt-1 text-xs text-blue-600 dark:text-blue-400"
                   >
                     <i class="fas fa-info-circle mr-1" />
                     将批量创建 {{ parsedSessionKeyCount }} 个账户
+                  </p>
+                  <p
+                    v-if="singleAccount && parsedSessionKeyCount > 1"
+                    class="mt-1 text-xs text-amber-600 dark:text-amber-400"
+                  >
+                    <i class="fas fa-exclamation-triangle mr-1" />
+                    只会使用第一行的 sessionKey
                   </p>
                 </div>
 
@@ -797,7 +810,7 @@
         type="button"
         @click="$emit('back')"
       >
-        上一步
+        {{ backText }}
       </button>
       <!-- Cookie自动授权模式不显示此按钮（Claude平台） -->
       <button
@@ -827,10 +840,34 @@ const props = defineProps({
   proxy: {
     type: Object,
     default: null
+  },
+  // Claude 授权类型：标准 OAuth 或 Setup Token
+  claudeAuthType: {
+    type: String,
+    default: 'oauth',
+    validator: (value) => ['oauth', 'setup-token'].includes(value)
+  },
+  // 只授权单个账户（重新授权场景），Cookie 模式不做批量
+  singleAccount: {
+    type: Boolean,
+    default: false
+  },
+  // Gemini 强制显示同意页，确保已授权过的 Google 账户也能拿到新的 refresh_token
+  forceConsent: {
+    type: Boolean,
+    default: false
+  },
+  backText: {
+    type: String,
+    default: '上一步'
   }
 })
 
 const emit = defineEmits(['success', 'back'])
+
+const isClaudeSetupToken = computed(
+  () => props.platform === 'claude' && props.claudeAuthType === 'setup-token'
+)
 
 const accountsStore = useAccountsStore()
 
@@ -1004,13 +1041,16 @@ const generateAuthUrl = async () => {
       : {}
 
     if (props.platform === 'claude') {
-      const result = await accountsStore.generateClaudeAuthUrl(proxyConfig)
+      const result = isClaudeSetupToken.value
+        ? await accountsStore.generateClaudeSetupTokenUrl(proxyConfig)
+        : await accountsStore.generateClaudeAuthUrl(proxyConfig)
       authUrl.value = result.authUrl
       sessionId.value = result.sessionId
     } else if (props.platform === 'gemini' || props.platform === 'gemini-antigravity') {
       const result = await accountsStore.generateGeminiAuthUrl({
         ...proxyConfig,
-        oauthProvider: geminiOauthProvider.value
+        oauthProvider: geminiOauthProvider.value,
+        ...(props.forceConsent ? { forceConsent: true } : {})
       })
       authUrl.value = result.authUrl
       sessionId.value = result.sessionId
@@ -1155,7 +1195,9 @@ const exchangeCode = async () => {
 
     let tokenInfo
     if (props.platform === 'claude') {
-      tokenInfo = await accountsStore.exchangeClaudeCode(data)
+      tokenInfo = isClaudeSetupToken.value
+        ? await accountsStore.exchangeClaudeSetupTokenCode(data)
+        : await accountsStore.exchangeClaudeCode(data)
     } else if (props.platform === 'gemini' || props.platform === 'gemini-antigravity') {
       tokenInfo = await accountsStore.exchangeGeminiCode(data)
       // 附加 oauthProvider 信息到 tokenInfo
@@ -1203,10 +1245,11 @@ onBeforeUnmount(() => {
 // Cookie自动授权处理（支持批量）
 const handleCookieAuth = async () => {
   // 解析多行输入
-  const sessionKeys = sessionKey.value
+  const parsedKeys = sessionKey.value
     .split('\n')
     .map((s) => s.trim())
     .filter((s) => s.length > 0)
+  const sessionKeys = props.singleAccount ? parsedKeys.slice(0, 1) : parsedKeys
 
   if (sessionKeys.length === 0) {
     cookieAuthError.value = '请输入至少一个 sessionKey'
@@ -1234,10 +1277,13 @@ const handleCookieAuth = async () => {
   for (let i = 0; i < sessionKeys.length; i++) {
     batchProgress.value.current = i + 1
     try {
-      const result = await accountsStore.oauthWithCookie({
-        sessionKey: sessionKeys[i],
-        proxy: proxyConfig
-      })
+      const payload = { sessionKey: sessionKeys[i], proxy: proxyConfig }
+      const result = isClaudeSetupToken.value
+        ? await accountsStore.oauthSetupTokenWithCookie(payload)
+        : await accountsStore.oauthWithCookie(payload)
+      if (!result) {
+        throw new Error(accountsStore.error || '授权失败')
+      }
       results.push(result)
     } catch (error) {
       errors.push({
@@ -1284,8 +1330,20 @@ const onAuthMethodChange = () => {
   sessionId.value = ''
 }
 
+// 授权类型切换后，之前生成的授权链接/会话已不适用
+watch(
+  () => props.claudeAuthType,
+  () => onAuthMethodChange()
+)
+
+// 父组件处理完授权结果（成功或失败）后恢复按钮状态，保留已输入的 sessionKey
+const stopCookieLoading = () => {
+  cookieAuthLoading.value = false
+}
+
 // 暴露方法供父组件调用
 defineExpose({
-  resetCookieAuth
+  resetCookieAuth,
+  stopCookieLoading
 })
 </script>

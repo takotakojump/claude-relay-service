@@ -96,6 +96,48 @@ describe('temporary scheduling for usage reserve', () => {
     expect(values.has('usage_reserve_override:claude-official:oauth-2')).toBe(false)
   })
 
+  test('a small reset-time drift from response headers does not cancel an override', async () => {
+    const account = {
+      id: 'oauth-header-drift',
+      claudeFiveHourUtilization: 98,
+      claudeFiveHourResetsAt: fiveHourReset,
+      claudeUsageUpdatedAt: new Date(start).toISOString()
+    }
+    const initial = await service.getState(account, 'claude-official')
+    await service.setTemporaryScheduling(account, 'claude-official', true, initial.version)
+
+    account.claudeRateLimitWindows = JSON.stringify({
+      observedAt: new Date(start + 1000).toISOString(),
+      windows: [
+        {
+          key: '5h',
+          utilization: 0.98,
+          reset: (Date.parse(fiveHourReset) + 90 * 1000) / 1000
+        }
+      ]
+    })
+
+    const state = await service.getState(account, 'claude-official')
+    expect(state.temporaryScheduling).toBe(true)
+    expect(state.paused).toBe(false)
+    expect(state.windows).toHaveLength(1)
+  })
+
+  test('a distinct reset of the same window cancels an override', async () => {
+    const account = {
+      id: 'oauth-next-window',
+      claudeFiveHourUtilization: 98,
+      claudeFiveHourResetsAt: fiveHourReset
+    }
+    const initial = await service.getState(account, 'claude-official')
+    await service.setTemporaryScheduling(account, 'claude-official', true, initial.version)
+    account.claudeFiveHourResetsAt = new Date(Date.parse(fiveHourReset) + 5 * 60 * 60 * 1000)
+
+    const state = await service.getState(account, 'claude-official')
+    expect(state.temporaryScheduling).toBe(false)
+    expect(state.paused).toBe(true)
+  })
+
   test('an operator can restore the automatic pause before reset', async () => {
     const account = {
       id: 'ccr-1',

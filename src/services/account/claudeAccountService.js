@@ -25,6 +25,11 @@ const {
   normalizeOptionalNonNegativeInteger,
   normalizeTempUnavailablePolicyInput
 } = require('../../utils/tempUnavailablePolicy')
+const {
+  AccountReauthorizeError,
+  compareAccountIdentity,
+  assertAccountIdentity
+} = require('../../utils/accountReauthHelper')
 
 /**
  * Check if account is Pro (not Max)
@@ -931,6 +936,119 @@ class ClaudeAccountService {
     } catch (error) {
       logger.error('❌ Failed to update Claude account:', error)
       throw error
+    }
+  }
+
+  /**
+   * 🔐 重新授权：原地替换 OAuth / Setup Token 凭证
+   * 账户 ID 不变，API Key 专属绑定、分组、优先级、代理等配置全部保留；
+   * 写入后清除所有异常状态并恢复调度。
+   * @param {string} accountId - 账户 ID
+   * @param {Object} claudeAiOauth - exchange-code / setup-token 接口返回的 claudeAiOauth
+   * @param {Object} options
+   * @param {boolean} options.force - 身份不一致时是否仍然替换
+   */
+  async reauthorizeAccount(accountId, claudeAiOauth, { force = false } = {}) {
+    const accountData = await redis.getClaudeAccount(accountId)
+    if (!accountData || Object.keys(accountData).length === 0) {
+      throw new Error('Account not found')
+    }
+
+    if (!claudeAiOauth || typeof claudeAiOauth !== 'object' || !claudeAiOauth.accessToken) {
+      throw new AccountReauthorizeError('授权结果缺少 Access Token')
+    }
+
+    const nextExtInfo = this._normalizeExtInfo(null, claudeAiOauth)
+    const previousExtInfo = this._normalizeExtInfo(accountData.extInfo, null)
+    const nextEmail = claudeAiOauth.account?.email_address || claudeAiOauth.account?.email || ''
+
+    const identityCheck = assertAccountIdentity(
+      compareAccountIdentity([
+        {
+          field: 'accountUuid',
+          previous: previousExtInfo?.account_uuid,
+          next: nextExtInfo?.account_uuid
+        },
+        {
+          field: 'organizationUuid',
+          previous: previousExtInfo?.org_uuid,
+          next: nextExtInfo?.org_uuid
+        },
+        {
+          field: 'email',
+          type: 'email',
+          previous: this._decryptSensitiveData(accountData.email),
+          next: nextEmail
+        }
+      ]),
+      { force }
+    )
+
+    let scopes = []
+    if (Array.isArray(claudeAiOauth.scopes)) {
+      ;({ scopes } = claudeAiOauth)
+    } else if (typeof claudeAiOauth.scopes === 'string') {
+      scopes = claudeAiOauth.scopes.split(' ').filter(Boolean)
+    }
+    const parsedExpiresAt = Number(claudeAiOauth.expiresAt)
+    const expiresAt =
+      Number.isFinite(parsedExpiresAt) && parsedExpiresAt > 0
+        ? parsedExpiresAt
+        : Date.now() + 60 * 60 * 1000
+    const now = new Date().toISOString()
+
+    // 整体替换凭证：Setup Token 没有 refresh token，这里必须显式清空旧值，
+    // 否则后台刷新会继续拿失效的旧 refresh token 覆盖新令牌
+    const updatedData = {
+      ...accountData,
+      claudeAiOauth: this._encryptSensitiveData(JSON.stringify(claudeAiOauth)),
+      accessToken: this._encryptSensitiveData(claudeAiOauth.accessToken),
+      refreshToken: this._encryptSensitiveData(claudeAiOauth.refreshToken || ''),
+      expiresAt: expiresAt.toString(),
+      scopes: scopes.join(' '),
+      lastRefreshAt: now,
+      updatedAt: now,
+      reauthorizedAt: now,
+      // 凭证变了，旧的用量快照不再可信
+      claudeFiveHourUtilization: '',
+      claudeFiveHourResetsAt: '',
+      claudeSevenDayUtilization: '',
+      claudeSevenDayResetsAt: '',
+      claudeSevenDayOpusUtilization: '',
+      claudeSevenDayOpusResetsAt: '',
+      claudeUsageUpdatedAt: ''
+    }
+    if (nextExtInfo) {
+      updatedData.extInfo = JSON.stringify(nextExtInfo)
+    }
+    if (nextEmail) {
+      updatedData.email = this._encryptSensitiveData(nextEmail)
+    }
+
+    await redis.setClaudeAccount(accountId, updatedData)
+    await this.resetAccountStatus(accountId)
+
+    // 标准 OAuth 有 user:profile 权限，顺手刷新订阅信息；Setup Token 没有，跳过
+    if (scopes.includes('user:profile')) {
+      try {
+        await this.fetchAndUpdateAccountProfile(accountId, claudeAiOauth.accessToken)
+      } catch (profileError) {
+        logger.warn(
+          `⚠️ Failed to fetch profile after re-authorizing account ${accountId}: ${profileError.message}`
+        )
+      }
+    }
+
+    logger.success(
+      `🔐 Re-authorized Claude account: ${accountData.name} (${accountId}), identity: ${identityCheck}`
+    )
+
+    return {
+      accountId,
+      identityCheck,
+      authType: isClaudeOAuthAccount({ scopes, refreshToken: claudeAiOauth.refreshToken })
+        ? 'oauth'
+        : 'setup-token'
     }
   }
 

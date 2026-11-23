@@ -12,7 +12,8 @@ const redis = require('../../models/redis')
 const { authenticateAdmin } = require('../../middleware/auth')
 const logger = require('../../utils/logger')
 const webhookNotifier = require('../../utils/webhookNotifier')
-const { formatAccountExpiry, mapExpiryField } = require('./utils')
+const { shouldRecoverAfterCredentialUpdate } = require('../../utils/accountReauthHelper')
+const { formatAccountExpiry, mapExpiryField, sendReauthorizeError } = require('./utils')
 const { createOpenAITestPayload, extractErrorMessage } = require('../../utils/testPayloadHelper')
 const ProxyHelper = require('../../utils/proxyHelper')
 const grokHelper = require('../../utils/grokHelper')
@@ -312,6 +313,19 @@ router.put('/grok-accounts/:id', authenticateAdmin, async (req, res) => {
     }
 
     const result = await grokAccountService.updateAccount(id, mappedUpdates)
+
+    // 手动写入了新凭证且账户原本处于异常状态：清除异常并恢复调度
+    if (
+      shouldRecoverAfterCredentialUpdate(currentAccount.status, mappedUpdates, [
+        'accessToken',
+        'refreshToken',
+        'apiKey'
+      ])
+    ) {
+      await grokAccountService.resetAccountStatus(id)
+      logger.info(`🔄 Recovered Grok account ${id} after credential update`)
+    }
+
     res.json({ success: true, ...result })
   } catch (error) {
     logger.error('Failed to update Grok account:', error)
@@ -381,6 +395,25 @@ router.put('/grok-accounts/:id/toggle', authenticateAdmin, async (req, res) => {
   } catch (error) {
     logger.error('Failed to toggle Grok account status:', error)
     res.status(500).json({ success: false, error: error.message })
+  }
+})
+
+// 🔐 重新授权 Grok 账户（原地替换凭证，保留账户 ID、专属绑定、分组等全部配置）
+router.post('/grok-accounts/:id/reauthorize', authenticateAdmin, async (req, res) => {
+  try {
+    const { id } = req.params
+    const { tokens, accountInfo, force } = req.body || {}
+
+    const result = await grokAccountService.reauthorizeAccount(
+      id,
+      { tokens, accountInfo },
+      { force: force === true }
+    )
+
+    logger.success(`🔐 Admin re-authorized Grok account: ${id}`)
+    return res.json({ success: true, data: result })
+  } catch (error) {
+    return sendReauthorizeError(res, error, 'Grok')
   }
 })
 

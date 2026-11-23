@@ -6,7 +6,8 @@ const redis = require('../../models/redis')
 const { authenticateAdmin } = require('../../middleware/auth')
 const logger = require('../../utils/logger')
 const webhookNotifier = require('../../utils/webhookNotifier')
-const { formatAccountExpiry, mapExpiryField } = require('./utils')
+const { shouldRecoverAfterCredentialUpdate } = require('../../utils/accountReauthHelper')
+const { formatAccountExpiry, mapExpiryField, sendReauthorizeError } = require('./utils')
 
 const router = express.Router()
 
@@ -21,7 +22,8 @@ function getDefaultRedirectUri(oauthProvider) {
 // 生成 Gemini OAuth 授权 URL
 router.post('/generate-auth-url', authenticateAdmin, async (req, res) => {
   try {
-    const { state, proxy, oauthProvider } = req.body // 接收代理配置与OAuth Provider
+    // 接收代理配置与OAuth Provider；forceConsent 用于重新授权，确保拿到新的 refresh_token
+    const { state, proxy, oauthProvider, forceConsent } = req.body
 
     const redirectUri = getDefaultRedirectUri(oauthProvider)
 
@@ -33,7 +35,9 @@ router.post('/generate-auth-url', authenticateAdmin, async (req, res) => {
       codeVerifier,
       redirectUri: finalRedirectUri,
       oauthProvider: resolvedOauthProvider
-    } = await geminiAccountService.generateAuthUrl(state, redirectUri, proxy, oauthProvider)
+    } = await geminiAccountService.generateAuthUrl(state, redirectUri, proxy, oauthProvider, {
+      forceConsent: forceConsent === true
+    })
 
     // 创建 OAuth 会话，包含 codeVerifier 和代理配置
     const sessionId = authState
@@ -355,7 +359,21 @@ router.put('/:accountId', authenticateAdmin, async (req, res) => {
       }
     }
 
-    const updatedAccount = await geminiAccountService.updateAccount(accountId, mappedUpdates)
+    const updatedAccount = await geminiAccountService.updateAccount(accountId, {
+      ...mappedUpdates
+    })
+
+    // 手动写入了新凭证且账户原本处于异常状态：清除异常并恢复调度
+    if (
+      shouldRecoverAfterCredentialUpdate(currentAccount.status, mappedUpdates, [
+        'geminiOauth',
+        'accessToken',
+        'refreshToken'
+      ])
+    ) {
+      await geminiAccountService.resetAccountStatus(accountId)
+      logger.info(`🔄 Recovered Gemini account ${accountId} after credential update`)
+    }
 
     logger.success(`📝 Admin updated Gemini account: ${accountId}`)
     return res.json({ success: true, data: updatedAccount })
@@ -492,6 +510,24 @@ router.post('/:id/reset-rate-limit', authenticateAdmin, async (req, res) => {
 })
 
 // 重置 Gemini OAuth 账户状态（清除所有异常状态）
+// 🔐 重新授权 Gemini 账户（原地替换凭证，保留账户 ID、专属绑定、分组等全部配置）
+router.post('/:accountId/reauthorize', authenticateAdmin, async (req, res) => {
+  try {
+    const { accountId } = req.params
+    const { tokens, oauthProvider } = req.body || {}
+
+    const result = await geminiAccountService.reauthorizeAccount(accountId, {
+      tokens,
+      oauthProvider
+    })
+
+    logger.success(`🔐 Admin re-authorized Gemini account: ${accountId}`)
+    return res.json({ success: true, data: result })
+  } catch (error) {
+    return sendReauthorizeError(res, error, 'Gemini')
+  }
+})
+
 router.post('/:id/reset-status', authenticateAdmin, async (req, res) => {
   try {
     const { id } = req.params

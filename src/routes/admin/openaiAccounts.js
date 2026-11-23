@@ -14,7 +14,8 @@ const { authenticateAdmin } = require('../../middleware/auth')
 const logger = require('../../utils/logger')
 const ProxyHelper = require('../../utils/proxyHelper')
 const webhookNotifier = require('../../utils/webhookNotifier')
-const { formatAccountExpiry, mapExpiryField } = require('./utils')
+const { shouldRecoverAfterCredentialUpdate } = require('../../utils/accountReauthHelper')
+const { formatAccountExpiry, mapExpiryField, sendReauthorizeError } = require('./utils')
 
 const router = express.Router()
 
@@ -757,6 +758,12 @@ router.put('/:id', authenticateAdmin, async (req, res) => {
 
     const updatedAccount = await openaiAccountService.updateAccount(id, updateData)
 
+    // 手动写入了新凭证且账户原本处于异常状态：清除异常并恢复调度
+    if (shouldRecoverAfterCredentialUpdate(currentAccount.status, mappedUpdates, ['openaiOauth'])) {
+      await openaiAccountService.resetAccountStatus(id)
+      logger.info(`🔄 Recovered OpenAI account ${id} after credential update`)
+    }
+
     // 如果需要刷新但不强制成功（非关键更新）
     if (needsImmediateRefresh && !requireRefreshSuccess) {
       try {
@@ -865,6 +872,25 @@ router.put('/:id/toggle', authenticateAdmin, async (req, res) => {
 })
 
 // 重置 OpenAI 账户状态（清除所有异常状态）
+// 🔐 重新授权 OpenAI 账户（原地替换凭证，保留账户 ID、专属绑定、分组等全部配置）
+router.post('/:accountId/reauthorize', authenticateAdmin, async (req, res) => {
+  try {
+    const { accountId } = req.params
+    const { tokens, accountInfo, force } = req.body || {}
+
+    const result = await openaiAccountService.reauthorizeAccount(
+      accountId,
+      { tokens, accountInfo },
+      { force: force === true }
+    )
+
+    logger.success(`🔐 Admin re-authorized OpenAI account: ${accountId}`)
+    return res.json({ success: true, data: result })
+  } catch (error) {
+    return sendReauthorizeError(res, error, 'OpenAI')
+  }
+})
+
 router.post('/:accountId/reset-status', authenticateAdmin, async (req, res) => {
   try {
     const { accountId } = req.params

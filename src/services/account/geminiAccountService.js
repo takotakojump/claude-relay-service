@@ -17,6 +17,7 @@ const {
 const tokenRefreshService = require('../tokenRefreshService')
 const { createEncryptor } = require('../../utils/commonHelper')
 const antigravityClient = require('../antigravityClient')
+const { AccountReauthorizeError } = require('../../utils/accountReauthHelper')
 
 // Gemini 账户键前缀
 const GEMINI_ACCOUNT_KEY_PREFIX = 'gemini_account:'
@@ -248,7 +249,8 @@ async function generateAuthUrl(
   state = null,
   redirectUri = null,
   proxyConfig = null,
-  oauthProvider = null
+  oauthProvider = null,
+  { forceConsent = false } = {}
 ) {
   // 使用新的 redirect URI
   const finalRedirectUri = redirectUri || 'https://codeassist.google.com/authcode'
@@ -275,7 +277,8 @@ async function generateAuthUrl(
     code_challenge_method: 'S256',
     code_challenge: codeVerifier.codeChallenge,
     state: stateValue,
-    prompt: 'select_account'
+    // 已授权过的 Google 账户再次授权时，只有 consent 才保证返回新的 refresh_token
+    prompt: forceConsent ? 'consent select_account' : 'select_account'
   })
 
   return {
@@ -1884,10 +1887,78 @@ async function resetAccountStatus(accountId) {
   }
 }
 
+/**
+ * 🔐 重新授权：原地替换 OAuth 凭证
+ * 账户 ID 不变，API Key 专属绑定、分组、优先级、代理、项目 ID 等配置全部保留；
+ * 写入后清除所有异常状态并恢复调度。
+ * Gemini 的授权结果不含账户身份信息，无法校验是否为同一 Google 账户（返回 unverifiable）。
+ * @param {string} accountId - 账户 ID
+ * @param {Object} payload - exchange-code 接口返回的 { tokens, oauthProvider }
+ */
+async function reauthorizeAccount(accountId, { tokens, oauthProvider } = {}) {
+  const account = await getAccount(accountId)
+  if (!account) {
+    throw new Error('Account not found')
+  }
+
+  if (!tokens || !tokens.access_token) {
+    throw new AccountReauthorizeError('授权结果缺少 Access Token')
+  }
+
+  const currentProvider = normalizeOauthProvider(account.oauthProvider)
+  if (oauthProvider && normalizeOauthProvider(oauthProvider) !== currentProvider) {
+    throw new AccountReauthorizeError(`授权类型不匹配：该账户使用 ${currentProvider} 授权`)
+  }
+
+  const warnings = []
+  let refreshToken = tokens.refresh_token || ''
+  if (!refreshToken) {
+    // 正常情况下 forceConsent 会让 Google 返回新的 refresh_token；没有返回就沿用旧值并提示
+    refreshToken = account.refreshToken || ''
+    warnings.push('refresh_token_missing')
+  }
+
+  const oauthConfig = getOauthProviderConfig(currentProvider)
+  const parsedExpiry = Number(tokens.expiry_date)
+  const expiryDate =
+    Number.isFinite(parsedExpiry) && parsedExpiry > 0 ? parsedExpiry : Date.now() + 60 * 60 * 1000
+  const geminiOauth = {
+    access_token: tokens.access_token,
+    refresh_token: refreshToken,
+    scope: tokens.scope || oauthConfig.scopes.join(' '),
+    token_type: tokens.token_type || 'Bearer',
+    expiry_date: expiryDate
+  }
+  const now = new Date().toISOString()
+
+  const updates = {
+    geminiOauth: JSON.stringify(geminiOauth),
+    accessToken: tokens.access_token,
+    refreshToken,
+    expiresAt: new Date(expiryDate).toISOString(),
+    scopes: geminiOauth.scope,
+    lastRefreshAt: now,
+    reauthorizedAt: now
+  }
+  // tempProjectId 由 loadCodeAssist 按 Google 账户自动获取，清空后下次请求会重新获取；
+  // Antigravity 的 tempProjectId 是随机生成的稳定值，保留
+  if (currentProvider !== OAUTH_PROVIDER_ANTIGRAVITY) {
+    updates.tempProjectId = ''
+  }
+
+  await updateAccount(accountId, updates)
+  await resetAccountStatus(accountId)
+
+  logger.success(`🔐 Re-authorized Gemini account: ${account.name} (${accountId})`)
+
+  return { accountId, identityCheck: 'unverifiable', warnings }
+}
+
 module.exports = {
   generateAuthUrl,
   pollAuthorizationStatus,
   exchangeCodeForTokens,
+  reauthorizeAccount,
   refreshAccessToken,
   createAccount,
   getAccount,

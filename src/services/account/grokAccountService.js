@@ -12,6 +12,11 @@ const {
 } = require('../../utils/tokenRefreshLogger')
 const grokHelper = require('../../utils/grokHelper')
 const grokQuota = require('../../utils/grokQuota')
+const {
+  AccountReauthorizeError,
+  compareAccountIdentity,
+  assertAccountIdentity
+} = require('../../utils/accountReauthHelper')
 
 class GrokAccountService {
   constructor() {
@@ -543,6 +548,74 @@ class GrokAccountService {
     })
     await upstreamErrorHelper.clearTempUnavailable(accountId, 'grok').catch(() => {})
     return { success: true, message: 'Account status reset successfully' }
+  }
+
+  /**
+   * 🔐 重新授权：原地替换 OAuth 凭证
+   * 账户 ID 不变，API Key 专属绑定、分组、优先级、代理、上游地址等配置全部保留；
+   * 写入后清除所有异常状态并恢复调度。
+   * @param {string} accountId - 账户 ID
+   * @param {Object} payload - exchange-code 接口返回的 { tokens, accountInfo }
+   * @param {Object} options
+   * @param {boolean} options.force - 身份不一致时是否仍然替换
+   */
+  async reauthorizeAccount(accountId, { tokens, accountInfo } = {}, { force = false } = {}) {
+    const account = await this.getAccount(accountId)
+    if (!account) {
+      throw new Error('Account not found')
+    }
+    if (account.authType !== grokHelper.AUTH_TYPES.OAUTH) {
+      throw new AccountReauthorizeError('API Key 模式的 Grok 账户不支持 OAuth 重新授权')
+    }
+
+    const source = tokens && typeof tokens === 'object' ? tokens : {}
+    const accessToken = String(source.accessToken || source.access_token || '').trim()
+    const refreshToken = String(source.refreshToken || source.refresh_token || '').trim()
+    if (!accessToken) {
+      throw new AccountReauthorizeError('授权结果缺少 Access Token')
+    }
+
+    const info =
+      accountInfo && typeof accountInfo === 'object'
+        ? accountInfo
+        : grokHelper.extractAccountInfoFromTokens({ accessToken })
+
+    const identityCheck = assertAccountIdentity(
+      compareAccountIdentity([
+        { field: 'email', type: 'email', previous: account.email, next: info.email }
+      ]),
+      { force }
+    )
+
+    const warnings = []
+    const now = new Date().toISOString()
+    const updates = {
+      accessToken,
+      tokenType: source.tokenType || source.token_type || 'Bearer',
+      expiresAt: source.expiresAt || '',
+      subscriptionTier:
+        grokQuota.subscriptionTierFromJWT(accessToken) || account.subscriptionTier || '',
+      lastRefreshAt: now,
+      reauthorizedAt: now
+    }
+    if (refreshToken) {
+      updates.refreshToken = refreshToken
+    } else {
+      // 没有返回新的 refresh token 时沿用旧值，并提示前端
+      warnings.push('refresh_token_missing')
+    }
+    if (info.email) {
+      updates.email = info.email
+    }
+
+    await this.updateAccount(accountId, updates)
+    await this.resetAccountStatus(accountId)
+
+    logger.success(
+      `🔐 Re-authorized Grok account: ${account.name} (${accountId}), identity: ${identityCheck}`
+    )
+
+    return { accountId, identityCheck, warnings }
   }
 
   async touchLastUsedAt(accountId) {

@@ -12,7 +12,8 @@ const {
   WorkOSDeviceAuthError
 } = require('../../utils/workosOAuthHelper')
 const webhookNotifier = require('../../utils/webhookNotifier')
-const { formatAccountExpiry, mapExpiryField } = require('./utils')
+const { shouldRecoverAfterCredentialUpdate } = require('../../utils/accountReauthHelper')
+const { formatAccountExpiry, mapExpiryField, sendReauthorizeError } = require('./utils')
 const { extractErrorMessage } = require('../../utils/testPayloadHelper')
 
 const router = express.Router()
@@ -391,6 +392,17 @@ router.put('/droid-accounts/:id', authenticateAdmin, async (req, res) => {
 
     const account = await droidAccountService.updateAccount(id, mappedUpdates)
 
+    // 手动写入了新凭证且账户原本处于异常状态：清除异常并恢复调度
+    if (
+      shouldRecoverAfterCredentialUpdate(currentAccount.status, mappedUpdates, [
+        'accessToken',
+        'refreshToken'
+      ])
+    ) {
+      await droidAccountService.resetAccountStatus(id)
+      logger.info(`🔄 Recovered Droid account ${id} after credential update`)
+    }
+
     try {
       if (currentAccount.accountType === 'group' && targetAccountType !== 'group') {
         await accountGroupService.removeAccountFromAllGroups(id)
@@ -591,6 +603,23 @@ router.delete('/droid-accounts/:id', authenticateAdmin, async (req, res) => {
 })
 
 // 刷新 Droid 账户 token
+// 🔐 重新授权 Droid 账户（原地替换凭证，保留账户 ID、专属绑定、分组等全部配置）
+router.post('/droid-accounts/:id/reauthorize', authenticateAdmin, async (req, res) => {
+  try {
+    const { id } = req.params
+    const { tokens, force } = req.body || {}
+
+    const result = await droidAccountService.reauthorizeAccount(id, tokens, {
+      force: force === true
+    })
+
+    logger.success(`🔐 Admin re-authorized Droid account: ${id}`)
+    return res.json({ success: true, data: result })
+  } catch (error) {
+    return sendReauthorizeError(res, error, 'Droid')
+  }
+})
+
 router.post('/droid-accounts/:id/refresh-token', authenticateAdmin, async (req, res) => {
   try {
     const { id } = req.params
@@ -691,7 +720,9 @@ router.post('/droid-accounts/:accountId/test', authenticateAdmin, async (req, re
 })
 
 // 重置 Droid 账户状态
-router.post('/:accountId/reset-status', authenticateAdmin, async (req, res) => {
+// 本路由挂载在 /admin 根路径下，必须带 droid-accounts 前缀，否则前端请求的
+// /admin/droid-accounts/:id/reset-status 匹配不到
+router.post('/droid-accounts/:accountId/reset-status', authenticateAdmin, async (req, res) => {
   try {
     const { accountId } = req.params
     const result = await droidAccountService.resetAccountStatus(accountId)
